@@ -82,6 +82,7 @@ class Classifer(pl.LightningModule):
             "y_hat": y_hat,
             "y": y
         })
+        torch.distributed.breakpoint(0)
 
         if self.trainer.datamodule.name == 'NLST':
             self.validation_outputs[-1].update({
@@ -634,7 +635,7 @@ class ResNet3D(Classifer):
         # Define a new classification head
         self.classification_head = nn.Linear(num_features, num_classes)
 
-    def forward(self, x, return_features=False):
+    def forward(self, x, return_features=True):
         # Pass input through the backbone
         features = self.backbone.stem(x)
         features = self.backbone.layer1(features)
@@ -644,13 +645,113 @@ class ResNet3D(Classifer):
 
         # pooling
         pooled_features = self.pool(activation_map).squeeze(dim=(2,3,4))
+        logits = self.classification_head(pooled_features)
 
         if return_features:
-            return pooled_features, activation_map
+            return logits, activation_map
         else:
             # class prediction
-            logits = self.classification_head(pooled_features)
             return logits
+
+    def get_xy(self, batch):
+        x = batch['x']
+        y = batch['y']
+        mask = batch['mask']  # Region mask
+        return x, y.to(torch.long).view(-1), mask
+
+    def training_step(self, batch, batch_idx):
+        x, y, mask = self.get_xy(batch)
+        y_hat, activation_map = self.forward(x)
+
+        # Classification loss
+        classification_loss = self.loss(y_hat, y)
+        activation_map = activation_map.mean(dim=1, keepdim=True)
+
+        # Reduce activation map to single channel
+        activation_map = activation_map.mean(dim=1, keepdim=True)
+
+        # Resize mask to match activation map size
+        mask_resized = F.interpolate(
+            mask,
+            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            mode='nearest'  # Use nearest interpolation for masks
+        )
+
+        # Ensure mask is float
+        mask_resized = mask_resized.float()
+
+        # Normalize activation map using sigmoid
+        activation_map_normalized = torch.sigmoid(activation_map)
+
+        # Localization loss (using BCE loss)
+        localization_loss_fn = nn.BCEWithLogitsLoss()
+        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
+
+        # Total loss
+        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
+
+        # Logging
+        self.log('train_acc', self.accuracy(y_hat, y), prog_bar=True)
+        self.log('train_loss', total_loss, prog_bar=True)
+        self.log('train_classification_loss', classification_loss)
+        self.log('train_localization_loss', localization_loss)
+
+        # Store outputs
+        self.training_outputs.append({
+            "y_hat": y_hat,
+            "y": y
+        })
+        return total_loss
+
+
+    def validation_step(self, batch, batch_idx):
+        x, y, mask = self.get_xy(batch)
+        y_hat, activation_map = self.forward(x)
+
+        # Classification loss
+        classification_loss = self.loss(y_hat, y)
+
+        # Reduce activation map to single channel
+        activation_map = activation_map.mean(dim=1, keepdim=True)
+
+        # Resize mask to match activation map size
+        mask_resized = F.interpolate(
+            mask,
+            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            mode='nearest'  # Use nearest interpolation for masks
+        )
+
+        # Ensure mask is float
+        mask_resized = mask_resized.float()
+
+        # Normalize activation map using sigmoid
+        activation_map_normalized = torch.sigmoid(activation_map)
+
+        # Localization loss (using BCE loss)
+        # localization_loss_fn = nn.BCELoss()
+        localization_loss_fn = nn.BCEWithLogitsLoss()
+
+        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
+
+        # Total loss
+        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
+
+        # Logging
+        self.log('val_loss', total_loss, sync_dist=True, prog_bar=True)
+        self.log('val_acc', self.accuracy(y_hat, y), sync_dist=True, prog_bar=True)
+        self.log('val_classification_loss', classification_loss, sync_dist=True, prog_bar=True)
+        self.log('val_localization_loss', localization_loss, sync_dist=True, prog_bar=True)
+
+        self.validation_outputs.append({
+            "y_hat": y_hat,
+            "y": y
+        })
+        if self.trainer.datamodule.name == 'NLST':
+            self.validation_outputs[-1].update({
+                            "criteria": batch[self.trainer.datamodule.criteria],
+                            **{k:batch[k] for k in self.trainer.datamodule.group_keys},
+            })
+        return total_loss
 
 class Swin3DModel(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, num_channels=3, **kwargs):

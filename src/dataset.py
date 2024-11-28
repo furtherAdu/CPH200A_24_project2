@@ -188,25 +188,44 @@ class NLST(pl.LightningDataModule):
             Prepare data transforms for train and test data.
             Note, you may want to apply data augmentation (see torchvision) for the train data.
         '''
-        resample = tio.transforms.Resample(target=VOXEL_SPACING)
-        padding = tio.transforms.CropOrPad(
+
+        resample = tio.Resample(target=VOXEL_SPACING)
+        padding = tio.CropOrPad(
             target_shape=tuple(CACHE_IMG_SIZE + [self.num_images]), padding_mode=0
         )
 
-        self.train_transform = tio.transforms.Compose([
-            resample,
-            padding
-        ])
+        # Base transforms applied to both train and test datasets
+        base_transforms = [resample, padding]
 
+        # Data augmentation transforms for training
         if self.use_data_augmentation:
-            # TODO: Support some data augmentations. Hint: consider using torchio.
-            raise NotImplementedError("Not implemented yet")
+            augmentation_transforms = [
+                tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
+                tio.RandomAffine(
+                    scales=(0.9, 1.1),
+                    degrees=(-10, 10),
+                    translation=(-5, 5),
+                    isotropic=False,
+                    image_interpolation='linear',
+                    p=0.5
+                ),
+                tio.RandomElasticDeformation(
+                    num_control_points=(7, 7, 7),
+                    max_displacement=(5.0, 5.0, 5.0),
+                    locked_borders=2,
+                    p=0.5
+                ),
+                tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
+                tio.RandomBiasField(coefficients=0.5, p=0.3),
+            ]
+            self.train_transform = tio.Compose(
+                base_transforms + augmentation_transforms
+            )
+        else:
+            self.train_transform = tio.Compose(base_transforms)
 
-
-        self.test_transform = tio.transforms.Compose([
-            resample,
-            padding
-        ])
+        # Test transforms (no augmentation)
+        self.test_transform = tio.Compose(base_transforms)
 
         self.normalize = torchvision.transforms.Normalize(mean=[128.1722], std=[87.1849])
 
@@ -273,8 +292,8 @@ class NLST(pl.LightningDataModule):
         if self.class_balance:
             # calculate class sample count for each split
             if stage == 'fit':
-                self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=len(self.train), replacement=True)
-                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=True)
+                self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=300, replacement=True)
+                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=True)
             
             if stage == 'validate':
                 self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
@@ -407,7 +426,7 @@ class NLST_Dataset(torch.utils.data.Dataset):
         mask = mask.unsqueeze(0)
         # print(f"Shape after adding batch dimension: {x.shape}")
         # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        D_size, H_size, W_size = 32, 224, 224
+        D_size, H_size, W_size = 16, 112, 112
         x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
         mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
 
