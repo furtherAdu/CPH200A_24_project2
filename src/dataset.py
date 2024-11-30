@@ -154,7 +154,7 @@ class NLST(pl.LightningDataModule):
             img_size = [256, 256],
             class_balance=False,
             group_keys=['race', 'educat', 'gender', 'age', 'ethnic'],
-            clinical_features=['age', 'gender', 'pkyr'],
+            clinical_features=[],
             feature_config=sorted(json.load(open("feature_config.json", "r"))['features']),
             **kwargs):
         super().__init__()

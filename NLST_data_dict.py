@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 subgroup_dict = dict(ethnic={1: "Hispanic or Latino",
                              2: "Neither Hispanic nor Latino",
                              7: "Participant refused to answer",
@@ -30,24 +32,14 @@ subgroup_dict = dict(ethnic={1: "Hispanic or Latino",
                            99: "Unknown/ decline to answer"}
                      )
 
-feature_transforms = dict(
-    histogram=[
-        'age'
-        ],
-    numerical=[
-        'pkyr',
-        'age',
-        ],
-    categorical=[
-        'gender',
-        'race',
-        'ethnic',
-        'educat',
-        ])
-
 clinical_feature_type = dict(
     age='numerical',
     pkyr='numerical',
+    cigar='categorical',
+    smokeage='numerical',
+    pipe='categorical',
+    smokeyr='numerical',
+    diagdiab='categorical',
     gender='categorical'
 )
 
@@ -58,3 +50,9 @@ subgroup_feature_type = dict(
     educat='categorical',
     gender='categorical'
 )
+
+feature_transforms = defaultdict(list)
+
+for feature_type in [clinical_feature_type, subgroup_feature_type]:
+    for k,v in feature_type.items():
+        feature_transforms[v].append(k)

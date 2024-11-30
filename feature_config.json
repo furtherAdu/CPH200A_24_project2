@@ -1,1 +1,1 @@
-{"features":["age", "gender", "pkyr"]}
+{"features":["age", "pkyr", "cigar", "smokeage", "pipe", "smokeyr", "diagdiab"]}

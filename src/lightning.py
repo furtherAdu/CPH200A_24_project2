@@ -952,7 +952,6 @@ class ResNet3D(Classifer):
             )
 
         # Compute IoU
-        torch.distributed.breakpoint(0)
         iou = compute_iou(torch.sigmoid(activation_map), mask_resized)
         self.log('train_iou', iou, prog_bar=True, on_step=True)
 
@@ -1237,7 +1236,7 @@ class RiskModel(Classifer):
             "y_seq": y_seq,  # Tensor of when the patient had cancer
             "y": batch["y"],  # If patient has cancer within 6 years (bool)
             "time_at_event": batch["time_at_event"],  # Censor time (int)
-            "attention_map": attention_map_normalized.detach(),
+            "attention_map": activation_map_normalized.detach(),
             "true_masks": region_annotation_mask,
             "criteria": batch[self.trainer.datamodule.criteria],
             **{k: batch[k] for k in self.trainer.datamodule.group_keys}

@@ -198,7 +198,7 @@ def add_main_args(parser: LightningArgumentParser) -> LightningArgumentParser:
 
     parser.add_argument(
         "--clinical_features",
-        default=['gender', 'age', 'pkyr'],
+        default=['age', 'pkyr', 'cigar', 'smokeage', 'pipe', 'smokeyr', 'diagdiab'],
         nargs='*',
         help="The clincal features to include in the risk model."
     )
