@@ -1,0 +1,5 @@
+{
+ "test_auc": 1.0,
+ "train_auc": 1.0,
+ "val_auc": 1.0
+}
