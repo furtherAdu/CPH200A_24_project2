@@ -874,7 +874,7 @@ class ResNet3D(Classifer):
         logits = self.classification_head(pooled_features)
 
         if return_features:
-            return logits, activation_map
+            return pooled_features, activation_map
         else:
             # class prediction
             return logits
@@ -1185,23 +1185,19 @@ class RiskModel(Classifer):
         
         activation_map = activation_map.mean(dim=1, keepdim=True)
 
-
         # Resize mask to match activation map size
-        mask_resized = F.interpolate(
-            mask,
+        region_annotation_mask_resized = F.interpolate(
+            region_annotation_mask,
             size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
             mode='nearest'  # Use nearest interpolation for masks
-        )
-
-        # Ensure mask is float
-        mask_resized = mask_resized.float()
+        ).float()
 
         # Normalize activation map using sigmoid
         activation_map_normalized = torch.sigmoid(activation_map)
 
         # Localization loss (using BCE loss)
         localization_loss_fn = nn.BCEWithLogitsLoss()
-        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
+        localization_loss = localization_loss_fn(activation_map_normalized, region_annotation_mask_resized)
         
         # Total loss
         lambda_loc = 0.5  # Adjust this weight as needed
@@ -1234,10 +1230,10 @@ class RiskModel(Classifer):
             "y_hat": y_hat.detach(),  # Logits for all risk scores
             "y_mask": y_mask,  # Tensor of when the patient was observed
             "y_seq": y_seq,  # Tensor of when the patient had cancer
-            "y": batch["y"],  # If patient has cancer within 6 years (bool)
+            "y": batch["y"],  # If patient has cancer within self.max_followup years (bool)
             "time_at_event": batch["time_at_event"],  # Censor time (int)
             "attention_map": activation_map_normalized.detach(),
-            "true_masks": region_annotation_mask,
+            "true_masks": region_annotation_mask_resized,
             "criteria": batch[self.trainer.datamodule.criteria],
             **{k: batch[k] for k in self.trainer.datamodule.group_keys}
         })
