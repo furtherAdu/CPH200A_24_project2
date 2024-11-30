@@ -211,14 +211,14 @@ class NLST(pl.LightningDataModule):
                     image_interpolation='linear',
                     p=0.5
                 ),
-                tio.RandomElasticDeformation(
-                    num_control_points=(7, 7, 7),
-                    max_displacement=(5.0, 5.0, 5.0),
-                    locked_borders=2,
-                    p=0.5
-                ),
+                # tio.RandomElasticDeformation(
+                #     num_control_points=(7, 7, 7),
+                #     max_displacement=(5.0, 5.0, 5.0),
+                #     locked_borders=2,
+                #     p=0.5
+                # ),
                 tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
-                tio.RandomBiasField(coefficients=0.5, p=0.3),
+                # tio.RandomBiasField(coefficients=0.5, p=0.3),
             ]
             self.train_transform = tio.Compose(
                 base_transforms + augmentation_transforms
@@ -301,13 +301,13 @@ class NLST(pl.LightningDataModule):
             # calculate class sample count for each split
             if stage == 'fit':
                 self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=300, replacement=True)
-                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=True)
+                # self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=False)
             
-            if stage == 'validate':
-                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
+            # if stage == 'validate':
+            #     self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
 
-            if stage in ['test', 'predict']:
-                self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
+            # if stage in ['test', 'predict']:
+            #     self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
 
         if stage == 'fit':
             self.train = NLST_Dataset(self.train, self.train_transform, **NLST_kwargs)
@@ -435,8 +435,8 @@ class NLST_Dataset(torch.utils.data.Dataset):
         mask = mask.unsqueeze(0)
         # print(f"Shape after adding batch dimension: {x.shape}")
         # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        D_size, H_size, W_size = 32, 224, 224
-        # D_size, H_size, W_size = 16, 112, 112
+        # D_size, H_size, W_size = 32, 224, 224
+        D_size, H_size, W_size = 16, 112, 112
         x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
         mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
 
