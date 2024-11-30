@@ -1168,6 +1168,8 @@ class RiskModel(Classifer):
 
             # concatenate all features
             clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
+        else:
+            clinical_features = None
 
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_features=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)

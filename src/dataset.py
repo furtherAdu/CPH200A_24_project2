@@ -178,10 +178,11 @@ class NLST(pl.LightningDataModule):
         self.class_balance = class_balance
         self.lungrads_path = lungrads_path
         self.group_keys = group_keys
-        self.criteria = 'lung_rads'
-        self.vectorizer = Vectorizer(feature_config=feature_config, num_bins=5)
-        self.name = 'NLST'
         self.clinical_features = clinical_features
+        self.criteria = 'lung_rads'
+        self.feature_config = [x for x in feature_config if x in [*self.group_keys, *self.clinical_features]]
+        self.vectorizer = Vectorizer(feature_config=self.feature_config, num_bins=5)
+        self.name = 'NLST'
 
         self.prepare_data_transforms()
 
@@ -435,8 +436,8 @@ class NLST_Dataset(torch.utils.data.Dataset):
         mask = mask.unsqueeze(0)
         # print(f"Shape after adding batch dimension: {x.shape}")
         # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        # D_size, H_size, W_size = 32, 224, 224
-        D_size, H_size, W_size = 16, 112, 112
+        D_size, H_size, W_size = 32, 224, 224
+        # D_size, H_size, W_size = 16, 112, 112
         x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
         mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
 
