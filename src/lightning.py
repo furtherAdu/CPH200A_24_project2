@@ -22,12 +22,11 @@ import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from einops.layers.torch import Reduce
 from NLST_data_dict import clinical_feature_type, subgroup_feature_type
+import os
+import matplotlib.pyplot as plt
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
-
-import os
-import matplotlib.pyplot as plt
 
 def compute_iou(pred_mask, true_mask, threshold=0.5):
     pred_binary = (pred_mask > threshold).float()
@@ -38,7 +37,7 @@ def compute_iou(pred_mask, true_mask, threshold=0.5):
     else:
         return (intersection / union).item()
 
-def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx, slice_idx, batch_idx, output_dir='train_visualizations'):
+def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx, slice_idx, batch_idx, output_dir='visualizations/train'):
     """
     Visualize the input image, true mask, and predicted mask, and save the results to a specified directory.
 
@@ -51,9 +50,6 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx
     batch_idx (int): Index of the current batch
     output_dir (str): Directory name to save the visualizations
     """
-    import os
-    import matplotlib.pyplot as plt
-
     # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
@@ -100,7 +96,8 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx
     plt.tight_layout()
     output_path = os.path.join(sample_dir, f'batch_{batch_idx}_slice_{slice_idx}.png')
     plt.savefig(output_path)
-    plt.close(fig)
+    plt.close()
+    return fig
 
 class Classifer(pl.LightningModule):
     def __init__(self, num_classes=9, init_lr=3e-4):
@@ -110,6 +107,7 @@ class Classifer(pl.LightningModule):
 
         # Define loss fn for classifier
         self.loss = nn.CrossEntropyLoss()
+        self.localization_loss_fn = nn.BCEWithLogitsLoss()
 
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=self.num_classes)
         self.auc = torchmetrics.AUROC(task="binary" if self.num_classes == 2 else "multiclass", num_classes=self.num_classes)
@@ -119,13 +117,18 @@ class Classifer(pl.LightningModule):
         self.validation_outputs = []
         self.test_outputs = []
 
-    def get_xy(self, batch):
+    def get_xy(self, batch, return_region_mask=False):
         if isinstance(batch, list):
             x, y = batch[0], batch[1]
         else:
             assert isinstance(batch, dict)
             x, y = batch["x"], batch["y_seq"][:,0]
-        return x, y.to(torch.long).view(-1)
+        
+        if return_region_mask:
+            region_mask = batch['mask']
+            return x, y.to(torch.long).view(-1), region_mask
+        else:
+            return x, y.to(torch.long).view(-1)
 
     def training_step(self, batch, batch_idx):
         x, y = self.get_xy(batch)
@@ -440,6 +443,92 @@ class Classifer(pl.LightningModule):
             metric_dict = {k:v.mean() for k,v in metric_dict.items()}
 
         return metric_dict
+
+    def step_3d(self, batch, batch_idx, stage, outputs, visualize_localization=False):
+        x, y, region_mask = self.get_xy(batch, return_region_mask=True)
+
+        y_hat, activation_map = self.forward(x, return_maps=True)
+
+        # Reduce activation map to single channel; normalize using sigmoid
+        activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
+        
+        # Resize mask to match activation map size
+        region_mask_resized = F.interpolate(
+            region_mask,
+            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            mode='nearest'  # Use nearest interpolation for masks
+        ).float()
+
+        # calculate loss
+        classification_loss = self.loss(y_hat, y)
+        localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
+        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
+
+        # Compute metrics
+        iou = compute_iou(activation_map_normalized, region_mask_resized) if region_mask_resized.sum() > 0 else float('nan')
+        accuracy = self.accuracy(y_hat, y)
+
+        metric_dict = {'iou': iou,
+                       'loss': total_loss, 
+                       'acc': accuracy,
+                       'classification_loss': classification_loss,
+                       'localization_loss': localization_loss}
+        
+        # Log metrics to wandb
+        for metric_name, metric_value in metric_dict.items():
+            self.log(f'{stage}_{metric_name}', metric_value, prog_bar=True, on_epoch=True, on_step=True, sync_dist=True)
+        
+        outputs.append({
+            "y_hat": y_hat,
+            "y": y
+        })
+        if self.trainer.datamodule.name == 'NLST':
+            outputs[-1].update({
+                "criteria": batch[self.trainer.datamodule.criteria],
+                **{k:batch[k] for k in self.trainer.datamodule.group_keys},
+            })
+
+        # Visualization and saving
+        if visualize_localization:
+            for sample_idx in range(x.size(0)):
+                if y[sample_idx]: # if sample has cancer diagnosis
+                    input_image = x[sample_idx]  # Shape: [C, D, H, W]
+                    true_mask = region_mask[sample_idx]  # Shape: [1, D, H, W]
+                    pred_mask = activation_map_normalized[sample_idx].unsqueeze(0) # Shape: [1, 1, D', H', W']
+
+                    # Upsample pred_mask to match input_image size
+                    pred_mask_upsampled = F.interpolate(
+                        pred_mask,
+                        size=input_image.shape[1:],  # Match spatial dimensions (D, H, W)
+                        mode='trilinear',
+                        align_corners=False
+                    )
+
+                    # Remove unnecessary dimensions
+                    pred_mask_upsampled = pred_mask_upsampled.squeeze()  # Shape: [D, H, W]
+
+                    # Define the slice index to visualize
+                    slice_idx = pred_mask_upsampled.shape[0] // 2  # Middle slice along depth
+
+                    # get patient id
+                    pid = batch['pid'][sample_idx]
+
+                    # Save visualization
+                    localization_fig = visualize_and_save_predictions(
+                                        input_image,
+                                        true_mask,
+                                        pred_mask_upsampled,
+                                        sample_idx=pid,
+                                        slice_idx=slice_idx,
+                                        batch_idx=batch_idx,
+                                        output_dir=f'visualizations/{self.__class__.__name__}/{stage}/epoch{self.trainer.current_epoch}'
+                                    )
+                
+                    # log plots
+                    plot_name = f'localization_{stage}set_pid{pid.tolist()[0]}_slice{slice_idx}'
+                    if self.logger.experiment:
+                        wandb_logger = self.logger
+                        wandb_logger.log_image(key=plot_name, images=[localization_fig])                 
     
 class MLP(Classifer):
     def __init__(self, input_dim=28*28*3, hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
@@ -655,6 +744,7 @@ class CNN(Classifer):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
         return [optimizer], [scheduler]
+
 class CNN3D(Classifer):
     def __init__(self, input_dim=(3, 16, 28, 28), hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -754,15 +844,17 @@ class ResNet18_adapted(Classifer):
         
         # Initialize a ResNet18 model
         weights_kwargs = {'weights': models.ResNet18_Weights.DEFAULT} if pretraining else {} 
-        self.classifier = models.resnet18(**weights_kwargs)
-        self.classifier.fc = nn.Linear(self.classifier.fc.in_features, num_classes)
+        self.backbone = models.resnet18(**weights_kwargs)        
+        self.classification_head = nn.Linear(self.backbone.fc.in_features, num_classes)
+        self.backbone.fc = nn.Identity()
+        self.pool = Reduce('b c h w -> b c 1 1', 'max') # max pooling
         
         # Add handling for depth dimension
         self.depth_handling = depth_handling
         
         if depth_handling == '3d_conv':
             # Replace first conv layer with 3D conv
-            self.classifier.conv1 = nn.Conv3d(
+            self.backbone.conv1 = nn.Conv3d(
                 in_channels=3,
                 out_channels=64,
                 kernel_size=(3, 7, 7),
@@ -778,21 +870,36 @@ class ResNet18_adapted(Classifer):
             )
         
         if not pretraining:
-            self.classifier.apply(self.init_weights)
+            self.backbone.apply(self.init_weights)
+            self.classification_head.apply(self.init_weights)
 
-    def forward(self, x):
+    def forward(self, x, return_logits=True, return_features=False, return_maps=False):
         # x shape: [batch_size, channels, depth, height, width]
         batch_size, channels, depth, height, width = x.size()
         
         if self.depth_handling == 'max_pool':
             # Method 1: Max pool across depth dimension
             x = x.max(dim=2)[0]  # Shape becomes [batch_size, channels, height, width]
-            return self.classifier(x)
+            x = self.backbone.conv1(x)
+            x = self.backbone.bn1(x)
+            x = self.backbone.relu(x)
+            x = self.backbone.maxpool(x)
+            x = self.backbone.layer1(x)
+            x = self.backbone.layer2(x)
+            x = self.backbone.layer3(x)
+            activation_map = self.backbone.layer4(x)
             
         elif self.depth_handling == 'avg_pool':
             # Method 2: Average pool across depth dimension
             x = x.mean(dim=2)  # Shape becomes [batch_size, channels, height, width]
-            return self.classifier(x)
+            x = self.backbone.conv1(x)
+            x = self.backbone.bn1(x)
+            x = self.backbone.relu(x)
+            x = self.backbone.maxpool(x)
+            x = self.backbone.layer1(x)
+            x = self.backbone.layer2(x)
+            x = self.backbone.layer3(x)
+            activation_map = self.backbone.layer4(x)
             
         elif self.depth_handling == 'slice_attention':
             # Method 3: Learn attention weights for each slice
@@ -801,46 +908,62 @@ class ResNet18_adapted(Classifer):
             x = x.view(-1, channels, height, width)
             
             # Get features for each slice
-            features = self.classifier.conv1(x)
-            features = self.classifier.bn1(features)
-            features = self.classifier.relu(features)
-            features = self.classifier.maxpool(features)
-            features = self.classifier.layer1(features)
+            features = self.backbone.conv1(x)
+            features = self.backbone.bn1(features)
+            features = self.backbone.relu(features)
+            features = self.backbone.maxpool(features)
+            features = self.backbone.layer1(features)
             
             # Reshape back to include depth
             features = features.view(batch_size, depth, -1)
             
             # Simple attention mechanism
-            attention_weights = F.softmax(self.classifier.avgpool(features), dim=1)
+            attention_weights = F.softmax(self.backbone.avgpool(features), dim=1)
             weighted_features = (features * attention_weights).sum(dim=1)
             
             # Continue through rest of network
-            x = self.classifier.layer2(weighted_features)
-            x = self.classifier.layer3(x)
-            x = self.classifier.layer4(x)
-            x = self.classifier.avgpool(x)
-            x = torch.flatten(x, 1)
-            return self.classifier.fc(x)
-            
+            x = self.backbone.layer2(weighted_features)
+            x = self.backbone.layer3(x)
+            activation_map = self.backbone.layer4(x)
+
         elif self.depth_handling == '3d_conv':
             # Method 4: Start with 3D convolutions
-            x = self.classifier.conv1(x)
+            x = self.backbone.conv1(x)
             x = self.transition(x)
             
             # Reshape to 2D after initial 3D conv
             x = x.squeeze(2)  # Remove depth dimension
             
             # Continue through rest of the network
-            x = self.classifier.bn1(x)
-            x = self.classifier.relu(x)
-            x = self.classifier.maxpool(x)
-            x = self.classifier.layer1(x)
-            x = self.classifier.layer2(x)
-            x = self.classifier.layer3(x)
-            x = self.classifier.layer4(x)
-            x = self.classifier.avgpool(x)
-            x = torch.flatten(x, 1)
-            return self.classifier.fc(x)
+            x = self.backbone.bn1(x)
+            x = self.backbone.relu(x)
+            x = self.backbone.maxpool(x)
+            x = self.backbone.layer1(x)
+            x = self.backbone.layer2(x)
+            x = self.backbone.layer3(x)
+            activation_map = self.backbone.layer4(x)
+        
+        pooled_features = self.pool(activation_map).squeeze(dim=(2,3))
+
+        # get objects to return
+        return_objects = []
+        if return_logits: # class prediction
+            logits = self.classification_head(pooled_features)
+            return_objects.append(logits)
+        if return_features:
+            return_objects.append(pooled_features)
+        if return_maps:
+            return_objects.append(activation_map)
+                    
+        return tuple(return_objects)
+
+        
+    def training_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+    def validation_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
+    def test_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "test", self.test_outputs)
 
 class ResNet3D(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=False, **kwargs):
@@ -861,7 +984,7 @@ class ResNet3D(Classifer):
         # Define a new classification head
         self.classification_head = nn.Linear(num_features, num_classes)
 
-    def forward(self, x, return_features=True):
+    def forward(self, x, return_logits=True, return_features=False, return_maps=False):
         # Pass input through the backbone
         features = self.backbone.stem(x)
         features = self.backbone.layer1(features)
@@ -871,144 +994,26 @@ class ResNet3D(Classifer):
 
         # pooling
         pooled_features = self.pool(activation_map).squeeze(dim=(2,3,4))
-        logits = self.classification_head(pooled_features)
-
+        
+        # get objects to return
+        return_objects = []
+        if return_logits: # class prediction
+            logits = self.classification_head(pooled_features)
+            return_objects.append(logits)
         if return_features:
-            return pooled_features, activation_map
-        else:
-            # class prediction
-            return logits
-
-    def get_xy(self, batch):
-        x = batch['x']
-        y = batch['y']
-        mask = batch['mask']  # Region mask
-        return x, y.to(torch.long).view(-1), mask
+            return_objects.append(pooled_features)
+        if return_maps:
+            return_objects.append(activation_map)
+                    
+        return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        x, y, mask = self.get_xy(batch)  # x: input images, y: labels, mask: ground truth masks
-        y_hat, activation_map = self.forward(x)  # Forward pass to get predictions and activation maps
-
-        # Classification loss
-        classification_loss = self.loss(y_hat, y)
-
-        # Reduce activation map to single channel
-        activation_map = activation_map.mean(dim=1, keepdim=True)  # Shape: [B, 1, D', H', W']
-
-        # Resize mask to match activation map size
-        mask_resized = F.interpolate(
-            mask.float(),
-            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
-            mode='nearest'  # Use nearest interpolation for masks
-        )
-
-        # Compute localization loss using BCEWithLogitsLoss
-        # Note: Do not apply sigmoid to activation_map before passing to BCEWithLogitsLoss
-        localization_loss_fn = nn.BCEWithLogitsLoss()
-        localization_loss = localization_loss_fn(activation_map, mask_resized)
-
-        # Total loss
-        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
-
-        # Logging
-        self.log('train_acc', self.accuracy(y_hat, y), prog_bar=True, on_step=True)
-        self.log('train_loss', total_loss, prog_bar=True, on_step=True)
-        self.log('train_classification_loss', classification_loss, on_step=True)
-        self.log('train_localization_loss', localization_loss, on_step=True)
-
-        # Visualization and saving
-        for sample_idx in range(x.size(0)):
-            input_image = x[sample_idx]  # Shape: [C, D, H, W]
-            true_mask = mask[sample_idx]  # Shape: [C, D, H, W]
-            pred_activation = activation_map[sample_idx]  # Shape: [1, D', H', W']
-
-            # Apply sigmoid to activation_map to get probabilities
-            pred_mask = torch.sigmoid(pred_activation)  # Shape: [1, D', H', W']
-            pred_mask = pred_mask.unsqueeze(1)  # Shape: [1, 1, D', H', W']
-
-            # Upsample pred_mask to match input_image size
-            pred_mask_upsampled = F.interpolate(
-                pred_mask,
-                size=input_image.shape[1:],  # Match spatial dimensions (D, H, W)
-                mode='trilinear',
-                align_corners=False
-            )
-
-            # Remove unnecessary dimensions
-            pred_mask_upsampled = pred_mask_upsampled.squeeze()  # Shape: [D, H, W]
-
-            # Define the slice index to visualize
-            slice_idx = pred_mask_upsampled.shape[0] // 2  # Middle slice along depth
-
-            # Save visualization
-            visualize_and_save_predictions(
-                input_image,
-                true_mask,
-                pred_mask_upsampled,
-                sample_idx=sample_idx,
-                slice_idx=slice_idx,
-                batch_idx=batch_idx,
-                output_dir='train_visualizations'
-            )
-
-        # Compute IoU
-        iou = compute_iou(torch.sigmoid(activation_map), mask_resized)
-        self.log('train_iou', iou, prog_bar=True, on_step=True)
-
-        return total_loss
-
-
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
     def validation_step(self, batch, batch_idx):
-        x, y, mask = self.get_xy(batch)
-        y_hat, activation_map = self.forward(x)
+        return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
+    def test_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "test", self.test_outputs)
 
-        # Classification loss
-        classification_loss = self.loss(y_hat, y)
-
-        # Reduce activation map to single channel
-        activation_map = activation_map.mean(dim=1, keepdim=True)
-
-        # Resize mask to match activation map size
-        mask_resized = F.interpolate(
-            mask,
-            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
-            mode='nearest'  # Use nearest interpolation for masks
-        )
-
-        # Ensure mask is float
-        mask_resized = mask_resized.float()
-
-        # Normalize activation map using sigmoid
-        activation_map_normalized = torch.sigmoid(activation_map)
-
-        # Localization loss (using BCE loss)
-        # localization_loss_fn = nn.BCELoss()
-        localization_loss_fn = nn.BCEWithLogitsLoss()
-
-        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
-
-        # Total loss
-        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
-        # Compute IoU
-        # iou = self.compute_iou(torch.sigmoid(activation_map), mask_resized)
-        # self.log('val_iou', iou, prog_bar=True, sync_dist=True)
-        # Logging
-        self.log('val_loss', total_loss, sync_dist=True, prog_bar=True, on_step=True)
-        self.log('val_acc', self.accuracy(y_hat, y), sync_dist=True, prog_bar=True, on_step=True)
-        self.log('val_classification_loss', classification_loss, sync_dist=True, prog_bar=True, on_step=True)
-        self.log('val_localization_loss', localization_loss, sync_dist=True, prog_bar=True, on_step=True)
-
-        self.validation_outputs.append({
-            "y_hat": y_hat,
-            "y": y
-        })
-        if self.trainer.datamodule.name == 'NLST':
-            self.validation_outputs[-1].update({
-                            "criteria": batch[self.trainer.datamodule.criteria],
-                            **{k:batch[k] for k in self.trainer.datamodule.group_keys},
-            })
-
-        return total_loss
 
 class Swin3DModel(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, num_channels=3, **kwargs):
@@ -1031,7 +1036,8 @@ class Swin3DModel(Classifer):
         # Define a new classification head
         self.classification_head = nn.Linear(in_features, num_classes)
 
-    def forward(self, x, return_features=False):
+    def forward(self, x, return_logits=True, return_features=False, return_maps=False):
+        torch.distributed.breakpoint
         # Extract features using the backbone
         x = self.backbone.patch_embed(x)  # B _T _H _W C
         x = self.backbone.pos_drop(x)
@@ -1042,12 +1048,24 @@ class Swin3DModel(Classifer):
         # pooling
         pooled_features = self.pool(activation_map).squeeze(dim=(2,3,4))
 
-        if return_features:
-            return pooled_features, activation_map
-        else:
-            # class prediction
+        # get objects to return
+        return_objects = []
+        if return_logits: # class prediction
             logits = self.classification_head(pooled_features)
-            return logits
+            return_objects.append(logits)
+        if return_features:
+            return_objects.append(pooled_features)
+        if return_maps:
+            return_objects.append(activation_map)
+                    
+        return tuple(return_objects)
+    
+    def training_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+    def validation_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
+    def test_step(self, batch, batch_idx):
+        return self.step_3d(batch, batch_idx, "test", self.test_outputs)
 
 NLST_CENSORING_DIST = {
     "0": 0.9851928130104401,
@@ -1095,28 +1113,29 @@ class RiskModel(Classifer):
         self.classification_head = Cumulative_Probability_Layer(num_features=num_features,
                                                                 max_followup=self.max_followup)
 
-        # Define loss functions
-        self.classification_loss_fn = nn.BCEWithLogitsLoss()
-        self.localization_loss_fn = nn.BCEWithLogitsLoss()
-
         # Initialize metrics
         self.auc = torchmetrics.AUROC(task="binary")
         self.iou_metric = torchmetrics.JaccardIndex(task="binary")
         self.dice_metric = torchmetrics.Dice()
 
-    def forward(self, x, return_features=False, added_features=None):
+    def forward(self, x, return_logits=True, return_features=False, return_maps=False, added_features=None):
         # Get logits and activation maps from the backbone
-        pooled_features, activation_map = self.backbone(x, return_features=True)
+        pooled_features, activation_map = self.backbone(x, return_logits=False, return_features=True, return_maps=True)
 
         if added_features is not None:
             pooled_features = torch.cat([pooled_features, added_features], dim=1)
 
-        logits = self.classification_head(pooled_features)
-
+         # get objects to return
+        return_objects = []
+        if return_logits: # class prediction
+            logits = self.classification_head(pooled_features)
+            return_objects.append(logits)
         if return_features:
-            return logits, activation_map
-        else:
-            return logits
+            return_objects.append(pooled_features)
+        if return_maps:
+            return_objects.append(activation_map)
+                    
+        return tuple(return_objects)
 
     def get_xy(self, batch):
         """
@@ -1172,7 +1191,7 @@ class RiskModel(Classifer):
             clinical_features = None
 
         # Get risk scores and activation maps from your model
-        y_hat, activation_map = self.forward(x, return_features=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
+        y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
         
         # Compute classification loss (risk prediction loss)
         # Mask for right-censored follow-up in patients without cancer
@@ -1193,8 +1212,7 @@ class RiskModel(Classifer):
         activation_map_normalized = torch.sigmoid(activation_map)
 
         # Localization loss (using BCE loss)
-        localization_loss_fn = nn.BCEWithLogitsLoss()
-        localization_loss = localization_loss_fn(activation_map_normalized, region_annotation_mask_resized)
+        localization_loss = self.localization_loss_fn(activation_map_normalized, region_annotation_mask_resized)
         
         # Total loss
         lambda_loc = 0.5  # Adjust this weight as needed
@@ -1236,7 +1254,6 @@ class RiskModel(Classifer):
         })
 
         return loss
-    
     
     def training_step(self, batch, batch_idx):
         return self.step(batch, batch_idx, "train", self.training_outputs)
