@@ -34,10 +34,27 @@ feature_transforms = dict(
     histogram=[
         'age'
         ],
-    numerical=[],
+    numerical=[
+        'pkyr',
+        'age',
+        ],
     categorical=[
         'gender',
         'race',
         'ethnic',
         'educat',
         ])
+
+clinical_feature_type = dict(
+    age='numerical',
+    pkyr='numerical',
+    gender='categorical'
+)
+
+subgroup_feature_type = dict(
+    age='histogram',
+    race='categorical',
+    ethnic='categorical',
+    educat='categorical',
+    gender='categorical'
+)

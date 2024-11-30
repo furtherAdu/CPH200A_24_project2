@@ -154,6 +154,7 @@ class NLST(pl.LightningDataModule):
             img_size = [256, 256],
             class_balance=False,
             group_keys=['race', 'educat', 'gender', 'age', 'ethnic'],
+            clinical_features=['age', 'gender', 'pkyr'],
             feature_config=sorted(json.load(open("feature_config.json", "r"))['features']),
             **kwargs):
         super().__init__()
@@ -180,6 +181,7 @@ class NLST(pl.LightningDataModule):
         self.criteria = 'lung_rads'
         self.vectorizer = Vectorizer(feature_config=feature_config, num_bins=5)
         self.name = 'NLST'
+        self.clinical_features = clinical_features
 
         self.prepare_data_transforms()
 
@@ -263,6 +265,11 @@ class NLST(pl.LightningDataModule):
                     # add group info
                     group_info = {group_key: pt_metadata[group_key][0] for group_key in self.group_keys} if self.group_keys else {}
 
+                    # add clinical features
+                    clinical_features = {k: pt_metadata[k][0] for k in self.clinical_features} if self.clinical_features else {}
+
+                    sample_kwargs = {**group_info, **clinical_features}
+
                     sample = {
                         "pid": pid,
                         "exam_str": exam_str,
@@ -275,7 +282,7 @@ class NLST(pl.LightningDataModule):
                         # lung_rads 0 indicates LungRads 1 and 2 (negative), 1 indicates LungRads 3 and 4 (positive)
                         # Follows "Pinsky PF, Gierada DS, Black W, et al: Performance of lung-RADS in the National Lung Screening Trial: A retrospective assessment. Ann Intern Med 162: 485-491, 2015"
                         "lung_rads": self.acc2lungrads[exam_int],
-                        **group_info
+                        **sample_kwargs
                     }
 
                     dataset.append(sample)
@@ -287,7 +294,8 @@ class NLST(pl.LightningDataModule):
                            img_size=self.img_size, 
                            num_images=self.num_images, 
                            num_channels=self.num_channels, 
-                           group_keys=self.group_keys)
+                           group_keys=self.group_keys,
+                           clinical_features=self.clinical_features)
         
         if self.class_balance:
             # calculate class sample count for each split
@@ -363,7 +371,7 @@ class NLST_Dataset(torch.utils.data.Dataset):
         Pytorch Dataset for NLST dataset. Loads preprocesses data from disk and applies data augmentation. Generates masks from bounding boxes stored in metadata..
     """
 
-    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, num_channels=1, group_keys=[]):
+    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, num_channels=1, group_keys=[], clinical_features=[]):
         self.dataset = dataset
         self.transform = transforms
         self.normalize = normalize
@@ -371,6 +379,7 @@ class NLST_Dataset(torch.utils.data.Dataset):
         self.num_images = num_images
         self.num_channels = num_channels
         self.group_keys = group_keys
+        self.clinical_features = clinical_features
 
         print(self.get_summary_statement())
 
@@ -442,7 +451,12 @@ class NLST_Dataset(torch.utils.data.Dataset):
             # print(f"Shape after channel repeat: {x.shape}")
 
         # get group info
-        group_info = {k: torch.tensor([v]) for k,v in self.dataset[idx].items() if k in self.group_keys} if self.group_keys else {}
+        group_info = {k:torch.tensor([v]) for k,v in self.dataset[idx].items() if k in self.group_keys} if self.group_keys else {}
+
+        # get clinical features
+        clinical_features = {k:torch.tensor([v]) for k,v in self.dataset[idx].items() if k in self.clinical_features} if self.clinical_features else {}
+        
+        sample_dict_kwargs = {**group_info, **clinical_features}
 
         # Prepare the sample
         sample_dict = {
@@ -453,7 +467,7 @@ class NLST_Dataset(torch.utils.data.Dataset):
             'y_mask': torch.tensor(self.dataset[idx]['y_mask'], dtype=torch.float),
             'lung_rads': torch.tensor([self.dataset[idx]['lung_rads']], dtype=torch.int),
             'time_at_event': torch.tensor([self.dataset[idx]['time_at_event']], dtype=torch.int),
-            **group_info
+            **sample_dict_kwargs
         }
         # print(f"y_seq shape: {sample_dict['y_seq'].shape}")
 

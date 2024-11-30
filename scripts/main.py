@@ -5,7 +5,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from src.lightning import MLP, CNN, LinearModel, ResNet18, RiskModel, ResNet3D, Swin3DModel, ResNet18_adapted
+from src.lightning import MLP, CNN, LinearModel, ResNet18, RiskModel, ResNet3D, Swin3DModel, ResNet18_adapted, CNN3D
 from src.dataset import PathMnist, NLST
 from lightning.pytorch.cli import LightningArgumentParser
 import lightning.pytorch as pl
@@ -14,6 +14,7 @@ import wandb
 from torch.backends import cudnn
 from lightning import seed_everything
 import json
+import torch
 
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
@@ -23,7 +24,7 @@ cudnn.benchmark = False
 NAME_TO_MODEL_CLASS = {
     "mlp": MLP,
     "cnn": CNN,
-    # "cnn3d": CNN3D,
+    "cnn3d": CNN3D,
     "linear": LinearModel,
     "resnet": ResNet18,
     "resnet_adapt": ResNet18_adapted,
@@ -57,7 +58,7 @@ def add_main_args(parser: LightningArgumentParser) -> LightningArgumentParser:
     parser.add_argument(
         "--model_name",
         default="mlp",
-        choices=["mlp", "linear", "cnn", "resnet", "resnet_adapt", "swin3d", "resnet3d"],  
+        choices=["mlp", "linear", "cnn", "cnn3d", "resnet", "resnet_adapt", "swin3d", "resnet3d"],  
         help="Name of model to use",
     )
 
@@ -195,6 +196,12 @@ def add_main_args(parser: LightningArgumentParser) -> LightningArgumentParser:
         help="If set to True, disables wandb logging. Default is False."
     )
 
+    parser.add_argument(
+        "--clinical_features",
+        default=['gender', 'age', 'pkyr'],
+        nargs='*',
+        help="The clincal features to include in the risk model."
+    )
 
     return parser
 
@@ -365,6 +372,7 @@ def main(args: argparse.Namespace):
     logger = get_logger(args)
     callbacks = get_callbacks(args)
     trainer = get_trainer(args, callbacks=callbacks, logger=logger)
+    # torch.cuda.set_per_process_memory_fraction(0.8, device=0)
 
     if args.train:
         print("Training model")

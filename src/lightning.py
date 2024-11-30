@@ -21,7 +21,7 @@ from NLST_data_dict import subgroup_dict
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from einops.layers.torch import Reduce
-import matplotlib.pyplot as plt
+from NLST_data_dict import clinical_feature_type, subgroup_feature_type
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -288,8 +288,12 @@ class Classifer(pl.LightningModule):
 
                 # transform arrays as needed
                 for k in self.trainer.datamodule.group_keys:
-                    if k in self.trainer.datamodule.vectorizer.features_fit:
-                        output_across_nodes.update(self.trainer.datamodule.vectorizer.transform({k: output_across_nodes[k]}))
+                    feature_type = subgroup_feature_type[k]
+                    if k in self.trainer.datamodule.vectorizer.features_fit[feature_type]:
+                        feature = self.trainer.datamodule.vectorizer.transform({k: output_across_nodes[k]}, feature_type)
+                        if feature_type == 'categorical':
+                            feature[k] = np.argmax(feature[k], axis=1)
+                        output_across_nodes.update(feature)
                     
                 # print(probs, y.view(-1), group_data) # samples are 2x batch_size
                 self.roc_analysis(output_across_nodes=output_across_nodes,
@@ -370,8 +374,7 @@ class Classifer(pl.LightningModule):
         fig, axs = plt.subplots(nrows, ncols, figsize=(int(ncols*10), (int(nrows*8))))
         axs = axs.ravel()
         axs_count = 0
-
-        for group_key, group_i in group_data.items():            
+        for group_key, group_i in group_data.items(): 
             # Plot operation point for_criteria
             self.plot_roc_operation_point(y,
                                           criteria,
@@ -384,8 +387,9 @@ class Classifer(pl.LightningModule):
                 subgroup_idxs = np.argwhere(group_i == subgroup)
 
                 # get subgroup name
-                if group_key in self.trainer.datamodule.vectorizer.features_fit:
-                    subgroup_name = self.trainer.datamodule.vectorizer.feature_levels[group_key][j]
+                feature_type = subgroup_feature_type[group_key]
+                if group_key in self.trainer.datamodule.vectorizer.features_fit[feature_type]:
+                    subgroup_name = self.trainer.datamodule.vectorizer.feature_levels[feature_type][group_key][j]
                 else:
                     subgroup_name = subgroup_dict[group_key][subgroup]                    
 
@@ -578,6 +582,152 @@ class CNN(Classifer):
         return self.classifier(x)
 
 
+    def __init__(self, input_dim=(3, 16, 28, 28), hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.hidden_dim = hidden_dim
+        self.use_bn = use_bn
+        self.bn_fc = [nn.BatchNorm1d(hidden_dim)] if self.use_bn else []
+        self.num_layers = num_layers
+        self.init_lr = init_lr
+
+        # Initialize convolutional layers
+        self.feature_extractor = []
+        for i in range(num_layers):
+            if i == 0:  # First conv layer
+                in_channels = input_dim[0]
+                out_channels = 20
+                k = 3  # Conv3d kernel size
+                conv_layer = nn.Sequential(
+                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
+                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+                    nn.ReLU()
+                )
+            else:  # Subsequent conv layers
+                k = 3
+                bn_conv = [nn.BatchNorm3d(out_channels)] if self.use_bn else []
+                conv_layer = nn.Sequential(
+                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
+                    *bn_conv,
+                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+                    nn.ReLU()
+                )
+
+            self.feature_extractor.append(conv_layer)
+
+            # Update channels for layers i > 0
+            in_channels = out_channels
+            out_channels *= 2
+
+        self.feature_extractor = nn.Sequential(*self.feature_extractor)
+
+        # Get the number of output features from conv layers
+        num_features_before_fc = functools.reduce(operator.mul, list(self.feature_extractor(torch.rand(1, *input_dim)).shape[1:]))
+
+        # Initialize fully connected layers
+        self.classifier = []
+        for i in range(num_layers):
+            in_features = num_features_before_fc if i == 0 else self.hidden_dim
+
+            if i == num_layers - 1:  # Final fc layer
+                fc_layer = nn.Sequential(
+                    nn.Linear(in_features, num_classes),
+                    nn.Softmax(dim=-1)
+                )
+            else:  # Hidden fc layers
+                fc_layer = nn.Sequential(
+                    nn.Linear(in_features=in_features, out_features=self.hidden_dim),
+                    *self.bn_fc,
+                    nn.ReLU()
+                )
+
+            self.classifier.append(fc_layer)
+
+        self.classifier = nn.Sequential(*self.classifier)
+
+    def forward(self, x):
+        # x shape: (batch_size, channels, depth, height, width)
+        x = self.feature_extractor(x).flatten(1)
+        return self.classifier(x)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        return [optimizer], [scheduler]
+class CNN3D(Classifer):
+    def __init__(self, input_dim=(3, 16, 28, 28), hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
+        super().__init__(num_classes=num_classes, init_lr=init_lr)
+        self.save_hyperparameters()
+
+        self.hidden_dim = hidden_dim
+        self.use_bn = use_bn
+        self.bn_fc = [nn.BatchNorm1d(hidden_dim)] if self.use_bn else []
+        self.num_layers = num_layers
+
+        # Initialize convolutional layers
+        self.feature_extractor = []
+        for i in range(num_layers):
+            if i == 0:  # First conv layer
+                in_channels = input_dim[0]
+                out_channels = 20
+                k = 3  # Conv3d kernel size
+                conv_layer = nn.Sequential(
+                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
+                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+                    nn.ReLU()
+                )
+            else:  # Subsequent conv layers
+                k = 3
+                bn_conv = [nn.BatchNorm3d(out_channels)] if self.use_bn else []
+                conv_layer = nn.Sequential(
+                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
+                    *bn_conv,
+                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+                    nn.ReLU()
+                )
+
+            self.feature_extractor.append(conv_layer)
+
+            # Update channels for layers i > 0
+            in_channels = out_channels
+            out_channels *= 2
+
+        self.feature_extractor = nn.Sequential(*self.feature_extractor)
+
+        # Get the number of output features from conv layers
+        num_features_before_fc = functools.reduce(operator.mul, list(self.feature_extractor(torch.rand(1, *input_dim)).shape[1:]))
+
+        # Initialize fully connected layers
+        self.classifier = []
+        for i in range(num_layers):
+            in_features = num_features_before_fc if i == 0 else self.hidden_dim
+
+            if i == num_layers - 1:  # Final fc layer
+                fc_layer = nn.Sequential(
+                    nn.Linear(in_features, num_classes),
+                    nn.Softmax(dim=-1)
+                )
+            else:  # Hidden fc layers
+                fc_layer = nn.Sequential(
+                    nn.Linear(in_features=in_features, out_features=self.hidden_dim),
+                    *self.bn_fc,
+                    nn.ReLU()
+                )
+
+            self.classifier.append(fc_layer)
+
+        self.classifier = nn.Sequential(*self.classifier)
+
+    def forward(self, x):
+        # x shape: (batch_size, channels, depth, height, width)
+        x = self.feature_extractor(x).flatten(1)
+        return self.classifier(x)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        return [optimizer], [scheduler]
 class ResNet18(Classifer):
     def __init__(self, num_classes=9, init_lr=1e-3, pretraining=False, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -935,16 +1085,20 @@ class Cumulative_Probability_Layer(nn.Module):
         return cum_prob # logits
 
 class RiskModel(Classifer):
-    def __init__(self, num_classes=2, init_lr=1e-3, max_followup=6, backbone=None, **kwargs):
+    def __init__(self, num_classes=2, init_lr=1e-3, max_followup=6, backbone=None, clinical_features=[], **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['backbone'])
         self.max_followup = max_followup
+        self.clinical_features = clinical_features
 
         # Use the modified ResNet3D model directly
         self.backbone = backbone  # Assume backbone is an instance of the modified ResNet3D
 
+        # get number of input features
+        num_features = backbone.classification_head.in_features + len(clinical_features)
+
         # Define classification head
-        self.classification_head = Cumulative_Probability_Layer(num_features=backbone.classification_head.in_features,
+        self.classification_head = Cumulative_Probability_Layer(num_features=num_features,
                                                                 max_followup=self.max_followup)
 
         # Define loss functions
@@ -956,9 +1110,12 @@ class RiskModel(Classifer):
         self.iou_metric = torchmetrics.JaccardIndex(task="binary")
         self.dice_metric = torchmetrics.Dice()
 
-    def forward(self, x, return_features=False):
+    def forward(self, x, return_features=False, added_features=None):
         # Get logits and activation maps from the backbone
         pooled_features, activation_map = self.backbone(x, return_features=True)
+
+        if added_features is not None:
+            pooled_features = torch.cat([pooled_features, added_features], dim=1)
 
         logits = self.classification_head(pooled_features)
 
@@ -997,9 +1154,29 @@ class RiskModel(Classifer):
 
     def step(self, batch, batch_idx, stage, outputs):
         x, y_seq, y_mask, region_annotation_mask = self.get_xy(batch)
-        
+
+        if self.clinical_features:
+            clinical_features_dict = {}
+            for k in self.clinical_features:
+                # get feature type
+                feature_type = clinical_feature_type[k]
+
+                # vectorize clinical feature as numpy array
+                clinical_feature_k = self.trainer.datamodule.vectorizer.transform(
+                    {k: self.safely_to_numpy(batch[k])}, feature_type=feature_type
+                )
+
+                if feature_type == 'categorical':
+                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1)
+
+                # send back to torch 
+                clinical_features_dict.update({k:torch.from_numpy(v) for k,v in clinical_feature_k.items()})
+
+            # concatenate all features
+            clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
+
         # Get risk scores and activation maps from your model
-        y_hat, activation_map = self.forward(x, return_features=True)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
+        y_hat, activation_map = self.forward(x, return_features=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
         
         # Compute classification loss (risk prediction loss)
         # Mask for right-censored follow-up in patients without cancer
@@ -1065,7 +1242,7 @@ class RiskModel(Classifer):
             "criteria": batch[self.trainer.datamodule.criteria],
             **{k: batch[k] for k in self.trainer.datamodule.group_keys}
         })
-        
+
         return loss
     
     
@@ -1195,7 +1372,6 @@ class RiskModel(Classifer):
                                         ax=ax,
                                         plot_label=f'{self.trainer.datamodule.criteria}, year{year+1}',
                                         color=colors[year])
-
 
             RocCurveDisplay.from_predictions(y[:, year],
                                             y_hat[:, year],
