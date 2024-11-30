@@ -871,7 +871,7 @@ class ResNet3D(Classifer):
 
         # pooling
         pooled_features = self.pool(activation_map).squeeze(dim=(2,3,4))
-        logits = self.classification_head(pooled_features)
+        logits = self.classification_head(pooled_features) 
 
         if return_features:
             return logits, activation_map
@@ -888,6 +888,7 @@ class ResNet3D(Classifer):
     def training_step(self, batch, batch_idx):
         x, y, mask = self.get_xy(batch)  # x: input images, y: labels, mask: ground truth masks
         y_hat, activation_map = self.forward(x)  # Forward pass to get predictions and activation maps
+        torch.distributed.breakpoint(0)
 
         # Classification loss
         classification_loss = self.loss(y_hat, y)
