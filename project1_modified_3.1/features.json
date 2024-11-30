@@ -1,0 +1,8 @@
+[{"name": "age", "type": "numerical"},
+{"name": "cig_stat", "type": "categorical"}, 
+{"name": "pack_years", "type": "numerical"}, 
+{"name": "smokea_f", "type": "numerical"},  
+{"name": "pipe", "type": "categorical"},
+{"name": "cig_years", "type": "numerical"}, 
+{"name": "diabetes_f", "type": "categorical"}
+]
