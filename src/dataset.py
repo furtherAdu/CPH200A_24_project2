@@ -468,6 +468,7 @@ class NLST_Dataset(torch.utils.data.Dataset):
             'y_mask': torch.tensor(self.dataset[idx]['y_mask'], dtype=torch.float),
             'lung_rads': torch.tensor([self.dataset[idx]['lung_rads']], dtype=torch.int),
             'time_at_event': torch.tensor([self.dataset[idx]['time_at_event']], dtype=torch.int),
+            'pid': torch.tensor([int(self.dataset[idx]['pid'])], dtype=torch.int),
             **sample_dict_kwargs
         }
         # print(f"y_seq shape: {sample_dict['y_seq'].shape}")
