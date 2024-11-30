@@ -21,9 +21,86 @@ from NLST_data_dict import subgroup_dict
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from einops.layers.torch import Reduce
+import matplotlib.pyplot as plt
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+
+import os
+import matplotlib.pyplot as plt
+
+def compute_iou(pred_mask, true_mask, threshold=0.5):
+    pred_binary = (pred_mask > threshold).float()
+    intersection = (pred_binary * true_mask).sum()
+    union = pred_binary.sum() + true_mask.sum() - intersection
+    if union == 0:
+        return 0.0
+    else:
+        return (intersection / union).item()
+
+def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx, slice_idx, batch_idx, output_dir='train_visualizations'):
+    """
+    Visualize the input image, true mask, and predicted mask, and save the results to a specified directory.
+
+    Parameters:
+    input_image (torch.Tensor): Input image tensor with shape [C, D, H, W]
+    true_mask (torch.Tensor): Ground truth mask tensor with shape [C, D, H, W]
+    pred_mask (torch.Tensor): Predicted mask tensor with shape [D, H, W]
+    sample_idx (int): Index of the sample in the batch
+    slice_idx (int): Index of the slice to visualize
+    batch_idx (int): Index of the current batch
+    output_dir (str): Directory name to save the visualizations
+    """
+    import os
+    import matplotlib.pyplot as plt
+
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create subdirectory for the current sample
+    sample_dir = os.path.join(output_dir, f'sample_{sample_idx}')
+    os.makedirs(sample_dir, exist_ok=True)
+
+    # Extract the specified slice
+    # Handle input_image
+    image_slice = input_image[0, slice_idx, :, :].cpu().numpy()  # Shape: [H, W]
+
+    # Handle true_mask
+    if true_mask.dim() == 4:
+        true_mask = true_mask[0]  # Remove channel dimension (assuming C=1)
+    true_mask_slice = true_mask[slice_idx, :, :].cpu().numpy()  # Shape: [H, W]
+
+    # Handle pred_mask
+    pred_mask_slice = pred_mask[slice_idx, :, :].detach().cpu().numpy()  # Shape: [H, W]
+
+    # Apply threshold to get binary predicted mask
+    pred_mask_binary = (pred_mask_slice > 0.5).astype(float)
+
+    # Create subplots
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Display input image
+    axs[0].imshow(image_slice, cmap='gray')
+    axs[0].set_title('Input Image')
+    axs[0].axis('off')
+
+    # Display ground truth mask
+    axs[1].imshow(image_slice, cmap='gray')
+    axs[1].imshow(true_mask_slice, alpha=0.5, cmap='Reds')
+    axs[1].set_title('Ground Truth Mask')
+    axs[1].axis('off')
+
+    # Display predicted mask
+    axs[2].imshow(image_slice, cmap='gray')
+    axs[2].imshow(pred_mask_binary, alpha=0.5, cmap='Blues')
+    axs[2].set_title('Predicted Mask')
+    axs[2].axis('off')
+
+    # Adjust layout and save the figure
+    plt.tight_layout()
+    output_path = os.path.join(sample_dir, f'batch_{batch_idx}_slice_{slice_idx}.png')
+    plt.savefig(output_path)
+    plt.close(fig)
 
 class Classifer(pl.LightningModule):
     def __init__(self, num_classes=9, init_lr=3e-4):
@@ -82,7 +159,6 @@ class Classifer(pl.LightningModule):
             "y_hat": y_hat,
             "y": y
         })
-        torch.distributed.breakpoint(0)
 
         if self.trainer.datamodule.name == 'NLST':
             self.validation_outputs[-1].update({
@@ -660,47 +736,76 @@ class ResNet3D(Classifer):
         return x, y.to(torch.long).view(-1), mask
 
     def training_step(self, batch, batch_idx):
-        x, y, mask = self.get_xy(batch)
-        y_hat, activation_map = self.forward(x)
+        x, y, mask = self.get_xy(batch)  # x: input images, y: labels, mask: ground truth masks
+        y_hat, activation_map = self.forward(x)  # Forward pass to get predictions and activation maps
 
         # Classification loss
         classification_loss = self.loss(y_hat, y)
-        activation_map = activation_map.mean(dim=1, keepdim=True)
 
         # Reduce activation map to single channel
-        activation_map = activation_map.mean(dim=1, keepdim=True)
+        activation_map = activation_map.mean(dim=1, keepdim=True)  # Shape: [B, 1, D', H', W']
 
         # Resize mask to match activation map size
         mask_resized = F.interpolate(
-            mask,
+            mask.float(),
             size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
             mode='nearest'  # Use nearest interpolation for masks
         )
 
-        # Ensure mask is float
-        mask_resized = mask_resized.float()
-
-        # Normalize activation map using sigmoid
-        activation_map_normalized = torch.sigmoid(activation_map)
-
-        # Localization loss (using BCE loss)
+        # Compute localization loss using BCEWithLogitsLoss
+        # Note: Do not apply sigmoid to activation_map before passing to BCEWithLogitsLoss
         localization_loss_fn = nn.BCEWithLogitsLoss()
-        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
+        localization_loss = localization_loss_fn(activation_map, mask_resized)
 
         # Total loss
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
 
         # Logging
-        self.log('train_acc', self.accuracy(y_hat, y), prog_bar=True)
-        self.log('train_loss', total_loss, prog_bar=True)
-        self.log('train_classification_loss', classification_loss)
-        self.log('train_localization_loss', localization_loss)
+        self.log('train_acc', self.accuracy(y_hat, y), prog_bar=True, on_step=True)
+        self.log('train_loss', total_loss, prog_bar=True, on_step=True)
+        self.log('train_classification_loss', classification_loss, on_step=True)
+        self.log('train_localization_loss', localization_loss, on_step=True)
 
-        # Store outputs
-        self.training_outputs.append({
-            "y_hat": y_hat,
-            "y": y
-        })
+        # Visualization and saving
+        for sample_idx in range(x.size(0)):
+            input_image = x[sample_idx]  # Shape: [C, D, H, W]
+            true_mask = mask[sample_idx]  # Shape: [C, D, H, W]
+            pred_activation = activation_map[sample_idx]  # Shape: [1, D', H', W']
+
+            # Apply sigmoid to activation_map to get probabilities
+            pred_mask = torch.sigmoid(pred_activation)  # Shape: [1, D', H', W']
+            pred_mask = pred_mask.unsqueeze(1)  # Shape: [1, 1, D', H', W']
+
+            # Upsample pred_mask to match input_image size
+            pred_mask_upsampled = F.interpolate(
+                pred_mask,
+                size=input_image.shape[1:],  # Match spatial dimensions (D, H, W)
+                mode='trilinear',
+                align_corners=False
+            )
+
+            # Remove unnecessary dimensions
+            pred_mask_upsampled = pred_mask_upsampled.squeeze()  # Shape: [D, H, W]
+
+            # Define the slice index to visualize
+            slice_idx = pred_mask_upsampled.shape[0] // 2  # Middle slice along depth
+
+            # Save visualization
+            visualize_and_save_predictions(
+                input_image,
+                true_mask,
+                pred_mask_upsampled,
+                sample_idx=sample_idx,
+                slice_idx=slice_idx,
+                batch_idx=batch_idx,
+                output_dir='train_visualizations'
+            )
+
+        # Compute IoU
+        torch.distributed.breakpoint(0)
+        iou = compute_iou(torch.sigmoid(activation_map), mask_resized)
+        self.log('train_iou', iou, prog_bar=True, on_step=True)
+
         return total_loss
 
 
@@ -735,12 +840,14 @@ class ResNet3D(Classifer):
 
         # Total loss
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
-
+        # Compute IoU
+        # iou = self.compute_iou(torch.sigmoid(activation_map), mask_resized)
+        # self.log('val_iou', iou, prog_bar=True, sync_dist=True)
         # Logging
-        self.log('val_loss', total_loss, sync_dist=True, prog_bar=True)
-        self.log('val_acc', self.accuracy(y_hat, y), sync_dist=True, prog_bar=True)
-        self.log('val_classification_loss', classification_loss, sync_dist=True, prog_bar=True)
-        self.log('val_localization_loss', localization_loss, sync_dist=True, prog_bar=True)
+        self.log('val_loss', total_loss, sync_dist=True, prog_bar=True, on_step=True)
+        self.log('val_acc', self.accuracy(y_hat, y), sync_dist=True, prog_bar=True, on_step=True)
+        self.log('val_classification_loss', classification_loss, sync_dist=True, prog_bar=True, on_step=True)
+        self.log('val_localization_loss', localization_loss, sync_dist=True, prog_bar=True, on_step=True)
 
         self.validation_outputs.append({
             "y_hat": y_hat,
@@ -751,7 +858,10 @@ class ResNet3D(Classifer):
                             "criteria": batch[self.trainer.datamodule.criteria],
                             **{k:batch[k] for k in self.trainer.datamodule.group_keys},
             })
+
         return total_loss
+
+
 
 class Swin3DModel(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, num_channels=3, **kwargs):
@@ -791,6 +901,8 @@ class Swin3DModel(Classifer):
             # class prediction
             logits = self.classification_head(pooled_features)
             return logits
+        
+
     
 
 NLST_CENSORING_DIST = {
@@ -895,24 +1007,25 @@ class RiskModel(Classifer):
         classification_loss = F.binary_cross_entropy_with_logits(y_hat, y_seq, reduction='none')
         classification_loss = (classification_loss * mask).sum() / mask.sum()  # Masked average
         
-        # Process activation map for localization loss
-        # Average over channel dimension to get attention map
-        attention_map = activation_map.mean(dim=1, keepdim=True)  # Shape: (B, 1, D, H, W)
-        
-        # Resize attention map to match ground truth mask
-        attention_map_resized = F.interpolate(
-            attention_map, size=region_annotation_mask.shape[2:], mode='trilinear', align_corners=False
+        activation_map = activation_map.mean(dim=1, keepdim=True)
+
+
+        # Resize mask to match activation map size
+        mask_resized = F.interpolate(
+            mask,
+            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            mode='nearest'  # Use nearest interpolation for masks
         )
-        
-        # Normalize attention map
-        attention_map_normalized = (attention_map_resized - attention_map_resized.min()) / (
-            attention_map_resized.max() - attention_map_resized.min() + 1e-8
-        )
-        
-        # Compute localization loss
-        localization_loss = self.localization_loss_fn(
-            attention_map_normalized, region_annotation_mask.float()
-        )
+
+        # Ensure mask is float
+        mask_resized = mask_resized.float()
+
+        # Normalize activation map using sigmoid
+        activation_map_normalized = torch.sigmoid(activation_map)
+
+        # Localization loss (using BCE loss)
+        localization_loss_fn = nn.BCEWithLogitsLoss()
+        localization_loss = localization_loss_fn(activation_map_normalized, mask_resized)
         
         # Total loss
         lambda_loc = 0.5  # Adjust this weight as needed

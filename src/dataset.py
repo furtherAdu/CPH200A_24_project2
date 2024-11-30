@@ -426,7 +426,8 @@ class NLST_Dataset(torch.utils.data.Dataset):
         mask = mask.unsqueeze(0)
         # print(f"Shape after adding batch dimension: {x.shape}")
         # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        D_size, H_size, W_size = 16, 112, 112
+        D_size, H_size, W_size = 32, 224, 224
+        # D_size, H_size, W_size = 16, 112, 112
         x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
         mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
 
