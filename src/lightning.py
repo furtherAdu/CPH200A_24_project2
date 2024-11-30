@@ -1011,8 +1011,6 @@ class ResNet3D(Classifer):
 
         return total_loss
 
-
-
 class Swin3DModel(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, num_channels=3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -1051,9 +1049,6 @@ class Swin3DModel(Classifer):
             # class prediction
             logits = self.classification_head(pooled_features)
             return logits
-        
-
-    
 
 NLST_CENSORING_DIST = {
     "0": 0.9851928130104401,

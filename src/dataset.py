@@ -211,14 +211,14 @@ class NLST(pl.LightningDataModule):
                     image_interpolation='linear',
                     p=0.5
                 ),
-                tio.RandomElasticDeformation(
-                    num_control_points=(7, 7, 7),
-                    max_displacement=(5.0, 5.0, 5.0),
-                    locked_borders=2,
-                    p=0.5
-                ),
+                # tio.RandomElasticDeformation(
+                #     num_control_points=(7, 7, 7),
+                #     max_displacement=(5.0, 5.0, 5.0),
+                #     locked_borders=2,
+                #     p=0.5
+                # ),
                 tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
-                tio.RandomBiasField(coefficients=0.5, p=0.3),
+                # tio.RandomBiasField(coefficients=0.5, p=0.3),
             ]
             self.train_transform = tio.Compose(
                 base_transforms + augmentation_transforms
