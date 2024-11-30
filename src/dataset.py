@@ -301,13 +301,13 @@ class NLST(pl.LightningDataModule):
             # calculate class sample count for each split
             if stage == 'fit':
                 self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=300, replacement=True)
-                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=True)
+                # self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=False)
             
-            if stage == 'validate':
-                self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
+            # if stage == 'validate':
+            #     self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
 
-            if stage in ['test', 'predict']:
-                self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
+            # if stage in ['test', 'predict']:
+            #     self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
 
         if stage == 'fit':
             self.train = NLST_Dataset(self.train, self.train_transform, **NLST_kwargs)
