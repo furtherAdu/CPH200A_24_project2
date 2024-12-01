@@ -5,5 +5,6 @@ python scripts/main.py \
     --batch_size 6 \
     --num_workers 0 \
     --use_data_augmentation True \
-    --pretraining True
+    --pretraining True \
+    --class_balance True
 
