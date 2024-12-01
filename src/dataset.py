@@ -203,23 +203,24 @@ class NLST(pl.LightningDataModule):
         # Data augmentation transforms for training
         if self.use_data_augmentation:
             augmentation_transforms = [
-                tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
-                tio.RandomAffine(
-                    scales=(0.9, 1.1),
-                    degrees=(-10, 10),
-                    translation=(-5, 5),
-                    isotropic=False,
-                    image_interpolation='linear',
-                    p=0.5
-                ),
+                tio.RandomAffine(degrees=20),
+                # tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
+                # tio.RandomAffine(
+                #     scales=(0.9, 1.1),
+                #     degrees=(-10, 10),
+                #     translation=(-5, 5),
+                #     isotropic=False,
+                #     image_interpolation='linear',
+                #     p=0.5
+                # ),
                 # tio.RandomElasticDeformation(
                 #     num_control_points=(7, 7, 7),
                 #     max_displacement=(5.0, 5.0, 5.0),
                 #     locked_borders=2,
                 #     p=0.5
                 # ),
-                tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
-                # tio.RandomBiasField(coefficients=0.5, p=0.3),
+                # tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
+                # # tio.RandomBiasField(coefficients=0.5, p=0.3),
             ]
             self.train_transform = tio.Compose(
                 base_transforms + augmentation_transforms
@@ -301,7 +302,7 @@ class NLST(pl.LightningDataModule):
         if self.class_balance:
             # calculate class sample count for each split
             if stage == 'fit':
-                self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=300, replacement=True)
+                self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=len(self.train), replacement=True)
                 # self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=False)
             
             # if stage == 'validate':
