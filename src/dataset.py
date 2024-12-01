@@ -432,19 +432,19 @@ class NLST_Dataset(torch.utils.data.Dataset):
         x = self.normalize(x)  # Custom normalization (mean=0, std=1)
         # print(f"Original sample['x'] shape: {x.shape}")
         # Add batch dimension
-        x = x.unsqueeze(0)  # Shape: [1, C, D, H, W]
-        mask = mask.unsqueeze(0)
+        # x = x.unsqueeze(0)  # Shape: [1, C, D, H, W]
+        # mask = mask.unsqueeze(0)
         # print(f"Shape after adding batch dimension: {x.shape}")
         # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        D_size, H_size, W_size = 32, 224, 224
-        # D_size, H_size, W_size = 16, 112, 112
-        x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
-        mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
+        # D_size, H_size, W_size = 32, 224, 224
+        # # D_size, H_size, W_size = 16, 112, 112
+        # x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
+        # mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
 
         # print(f"Shape after interpolation: {x.shape}")
         # Remove batch dimension
-        x = x.squeeze(0)  # Shape: [C, D_size, H_size, W_size]
-        mask = mask.squeeze(0)
+        # x = x.squeeze(0)  # Shape: [C, D_size, H_size, W_size]
+        # mask = mask.squeeze(0)
         # print(f"Shape after squeezing batch dimension: {x.shape}")
         # Expand channels if needed
         if self.num_channels == 3:
