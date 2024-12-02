@@ -17,6 +17,7 @@ from einops import reduce
 from torch.utils.data import WeightedRandomSampler
 import warnings
 from src.vectorizer import Vectorizer
+import gc
 
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
@@ -141,7 +142,6 @@ class NLST(pl.LightningDataModule):
 
     def __init__(
             self,
-            num_channels=3,
             use_data_augmentation=False,
             batch_size=1,
             num_workers=0,
@@ -159,7 +159,6 @@ class NLST(pl.LightningDataModule):
             **kwargs):
         super().__init__()
         self.save_hyperparameters()
-        self.num_channels = num_channels
 
         self.use_data_augmentation = use_data_augmentation
         self.batch_size = batch_size
@@ -278,7 +277,6 @@ class NLST(pl.LightningDataModule):
         NLST_kwargs = dict(normalize=self.normalize, 
                            img_size=self.img_size, 
                            num_images=self.num_images, 
-                           num_channels=self.num_channels, 
                            group_keys=self.group_keys,
                            clinical_features=self.clinical_features)
         
@@ -349,13 +347,12 @@ class NLST_Dataset(torch.utils.data.Dataset):
         Pytorch Dataset for NLST dataset. Loads preprocesses data from disk and applies data augmentation. Generates masks from bounding boxes stored in metadata..
     """
 
-    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, num_channels=1, group_keys=[], clinical_features=[]):
+    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, group_keys=[], clinical_features=[]):
         self.dataset = dataset
         self.transform = transforms
         self.normalize = normalize
         self.img_size = img_size
         self.num_images = num_images
-        self.num_channels = num_channels
         self.group_keys = group_keys
         self.clinical_features = clinical_features
 
@@ -408,11 +405,6 @@ class NLST_Dataset(torch.utils.data.Dataset):
         # Normalize volume
         x = self.normalize(x)  # Custom normalization (mean=0, std=1)
 
-        # Expand channels if needed
-        if self.num_channels == 3:
-            x = x.repeat(3, 1, 1, 1)  # From (1, D, H, W) to (3, D, H, W)
-            # print(f"Shape after channel repeat: {x.shape}")
-
         # get group info
         group_info = {k:torch.tensor([v]) for k,v in self.dataset[idx].items() if k in self.group_keys} if self.group_keys else {}
 
@@ -437,6 +429,9 @@ class NLST_Dataset(torch.utils.data.Dataset):
 
         # Remove unnecessary items
         del sample['bounding_boxes']
+        
+        # garbage collect
+        gc.collect()
 
         return sample_dict
 

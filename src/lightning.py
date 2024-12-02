@@ -24,7 +24,7 @@ from einops.layers.torch import Reduce
 from NLST_data_dict import clinical_feature_type, subgroup_feature_type
 import os
 import matplotlib.pyplot as plt
-import pdb
+from einops import repeat
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -574,7 +574,6 @@ class MLP(Classifer):
         self.model.apply(self.init_weights)
 
     def forward(self, x):
-        
         batch_size, channels, width, height = x.size()
         x = rearrange(x, 'b c w h -> b (w h c)')
         return self.model(x)
@@ -752,6 +751,9 @@ class CNN3D(Classifer):
 
     def forward(self, x):
         # x shape: (batch_size, channels, depth, height, width)
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         x = self.feature_extractor(x).flatten(1)
         return self.classifier(x)
 
@@ -815,6 +817,9 @@ class ResNet18_adapted(Classifer):
             self.classification_head.apply(self.init_weights)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # x shape: [batch_size, channels, depth, height, width]
         batch_size, channels, depth, height, width = x.size()
         
@@ -898,7 +903,6 @@ class ResNet18_adapted(Classifer):
                     
         return tuple(return_objects)
 
-        
     def training_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
     def validation_step(self, batch, batch_idx):
@@ -926,6 +930,9 @@ class ResNet3D(Classifer):
         self.classification_head = nn.Linear(num_features, num_classes)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # Pass input through the backbone
         features = self.backbone.stem(x)
         features = self.backbone.layer1(features)
@@ -978,7 +985,9 @@ class Swin3DModel(Classifer):
         self.classification_head = nn.Linear(in_features, num_classes)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
-        torch.distributed.breakpoint
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # Extract features using the backbone
         x = self.backbone.patch_embed(x)  # B _T _H _W C
         x = self.backbone.pos_drop(x)
@@ -1130,6 +1139,9 @@ class RiskModel(Classifer):
             clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
         else:
             clinical_features = None
+
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
 
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
