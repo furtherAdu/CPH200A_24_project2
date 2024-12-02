@@ -15,6 +15,7 @@ from torch.backends import cudnn
 from lightning import seed_everything
 import json
 import torch
+from lightning.pytorch.plugins import TorchSyncBatchNorm
 
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
@@ -373,6 +374,13 @@ def main(args: argparse.Namespace):
     callbacks = get_callbacks(args)
     trainer = get_trainer(args, callbacks=callbacks, logger=logger)
     # torch.cuda.set_per_process_memory_fraction(0.8, device=0)
+
+    if trainer.accelerator.__class__.__name__ == 'CUDAAccelerator':
+        # apply batch norm syncing across nodes
+        bn_sync = TorchSyncBatchNorm()
+        model = bn_sync.apply(model)
+    
+    import sys;sys.exit()
 
     if args.train:
         print("Training model")
