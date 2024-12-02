@@ -380,8 +380,6 @@ def main(args: argparse.Namespace):
         bn_sync = TorchSyncBatchNorm()
         model = bn_sync.apply(model)
     
-    import sys;sys.exit()
-
     if args.train:
         print("Training model")
         trainer.fit(model, datamodule)
