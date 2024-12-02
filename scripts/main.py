@@ -17,6 +17,7 @@ import json
 import torch
 from lightning.pytorch.plugins import TorchSyncBatchNorm
 
+torch.multiprocessing.set_sharing_strategy('file_system') # to prevent 'RuntimeError: Too many open files.' thrown by dataloader
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
 seed_everything(global_seed)
