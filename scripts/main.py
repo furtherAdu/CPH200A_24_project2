@@ -203,6 +203,13 @@ def add_main_args(parser: LightningArgumentParser) -> LightningArgumentParser:
         nargs='*',
         help="The clincal features to include in the risk model."
     )
+        
+    parser.add_argument(
+        "--fast_dev_run",
+        action='store_true',
+        help="Whether to run 5 batches of training, validation, test and prediction data through your trainer to see \
+        if there are any bugs. Disables tuner, checkpoint callbacks, early stopping callbacks, loggers and logger callbacks."
+    )
 
     return parser
 
@@ -300,6 +307,7 @@ def get_trainer(args, strategy='ddp', logger=None, callbacks=[], devices=None):
     args.trainer.logger = logger
     args.trainer.precision = "bf16-mixed" ## This mixed precision training is highly recommended
     args.trainer.min_epochs = 20
+    args.trainer.fast_dev_run = args.fast_dev_run
     if devices:
         args.trainer.devices = devices
 
