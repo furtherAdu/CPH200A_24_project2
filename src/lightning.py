@@ -530,6 +530,7 @@ class Classifer(pl.LightningModule):
                         wandb_logger = self.logger
                         wandb_logger.log_image(key=plot_name, images=[localization_fig])                 
     
+        return total_loss
 class MLP(Classifer):
     def __init__(self, input_dim=28*28*3, hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -1008,6 +1009,7 @@ class ResNet3D(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
+        print(batch['y'])
         return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
