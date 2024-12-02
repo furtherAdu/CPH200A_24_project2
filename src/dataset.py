@@ -240,13 +240,13 @@ class NLST(pl.LightningDataModule):
         self.train, self.val, self.test = [], [], []
 
 
-        import random
-        total_rows = len(self.metadata)
-        rows_to_load = int(total_rows * 0.005)
+        # import random
+        # total_rows = len(self.metadata)
+        # rows_to_load = int(total_rows * 0.005)
         
-        # Randomly sample the rows to load
-        selected_indices = random.sample(range(total_rows), rows_to_load)
-        self.metadata = [self.metadata[i] for i in sorted(selected_indices)]
+        # # Randomly sample the rows to load
+        # selected_indices = random.sample(range(total_rows), rows_to_load)
+        # self.metadata = [self.metadata[i] for i in sorted(selected_indices)]
     
 
         for mrn_row in tqdm.tqdm(self.metadata, position=0):
