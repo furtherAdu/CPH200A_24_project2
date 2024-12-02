@@ -24,6 +24,7 @@ from einops.layers.torch import Reduce
 from NLST_data_dict import clinical_feature_type, subgroup_feature_type
 import os
 import matplotlib.pyplot as plt
+import pdb
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -450,7 +451,9 @@ class Classifer(pl.LightningModule):
         y_hat, activation_map = self.forward(x, return_maps=True)
 
         # Reduce activation map to single channel; normalize using sigmoid
-        activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
+        activation_map_reduced = activation_map.mean(dim=1, keepdim=True)
+        activation_map_normalized = torch.sigmoid(activation_map_reduced)
+        # activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
         
         # Resize mask to match activation map size
         region_mask_resized = F.interpolate(
@@ -461,7 +464,14 @@ class Classifer(pl.LightningModule):
 
         # calculate loss
         classification_loss = self.loss(y_hat, y)
-        localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
+
+        use_localization = False
+        if use_localization:
+            # localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
+            localization_loss = self.localization_loss_fn(activation_map_reduced, region_mask_resized)
+
+        else:
+            localization_loss = 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
 
         # Compute metrics
@@ -1009,8 +1019,7 @@ class ResNet3D(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        print(batch['y'])
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
