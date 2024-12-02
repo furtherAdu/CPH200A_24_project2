@@ -203,7 +203,7 @@ class NLST(pl.LightningDataModule):
         # Data augmentation transforms for training
         if self.use_data_augmentation:
             augmentation_transforms = [
-                tio.RandomAffine(degrees=20),
+                tio.RandomAffine(degrees=20, p=0.5),
                 # tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
                 # tio.RandomAffine(
                 #     scales=(0.9, 1.1),
