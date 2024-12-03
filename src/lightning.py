@@ -248,7 +248,7 @@ class Classifer(pl.LightningModule):
 
         # confusion matrix metrics for criteria (e.g. lungrads)
         if self.trainer.datamodule.name == 'NLST':
-            criteria = torch.cat([o["y"] for o in self.test_outputs])
+            criteria = torch.cat([o['criteria'] for o in self.test_outputs])
             criteria_conf_metrics = self.get_confmat_metrics(criteria, y)
             self.log_dict({f'test_{k}_{self.trainer.datamodule.criteria}':v 
                            for k,v in criteria_conf_metrics.items()}, sync_dist=True, prog_bar=True)            
