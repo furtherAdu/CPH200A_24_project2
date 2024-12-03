@@ -1136,8 +1136,8 @@ class RiskModel(Classifer):
         # Get clinical features, if used
         clinical_features = self.get_clinical_features(batch)
 
-        # Expand channels
-        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+        # # Expand channels
+        # x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
 
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
