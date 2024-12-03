@@ -17,6 +17,7 @@ from einops import reduce
 from torch.utils.data import WeightedRandomSampler
 import warnings
 from src.vectorizer import Vectorizer
+import gc
 
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
@@ -141,7 +142,6 @@ class NLST(pl.LightningDataModule):
 
     def __init__(
             self,
-            num_channels=3,
             use_data_augmentation=False,
             batch_size=1,
             num_workers=0,
@@ -159,7 +159,6 @@ class NLST(pl.LightningDataModule):
             **kwargs):
         super().__init__()
         self.save_hyperparameters()
-        self.num_channels = num_channels
 
         self.use_data_augmentation = use_data_augmentation
         self.batch_size = batch_size
@@ -204,23 +203,6 @@ class NLST(pl.LightningDataModule):
         if self.use_data_augmentation:
             augmentation_transforms = [
                 tio.RandomAffine(degrees=20, p=0.5),
-                # tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
-                # tio.RandomAffine(
-                #     scales=(0.9, 1.1),
-                #     degrees=(-10, 10),
-                #     translation=(-5, 5),
-                #     isotropic=False,
-                #     image_interpolation='linear',
-                #     p=0.5
-                # ),
-                # tio.RandomElasticDeformation(
-                #     num_control_points=(7, 7, 7),
-                #     max_displacement=(5.0, 5.0, 5.0),
-                #     locked_borders=2,
-                #     p=0.5
-                # ),
-                # tio.RandomNoise(mean=0.0, std=(0, 0.1), p=0.25),
-                # # tio.RandomBiasField(coefficients=0.5, p=0.3),
             ]
             self.train_transform = tio.Compose(
                 base_transforms + augmentation_transforms
@@ -238,16 +220,6 @@ class NLST(pl.LightningDataModule):
         self.acc2lungrads = pickle.load(open(self.lungrads_path, "rb"))
         self.valid_exams = set(torch.load(self.valid_exam_path, weights_only=True))
         self.train, self.val, self.test = [], [], []
-
-
-        # import random
-        # total_rows = len(self.metadata)
-        # rows_to_load = int(total_rows * 0.005)
-        
-        # # Randomly sample the rows to load
-        # selected_indices = random.sample(range(total_rows), rows_to_load)
-        # self.metadata = [self.metadata[i] for i in sorted(selected_indices)]
-    
 
         for mrn_row in tqdm.tqdm(self.metadata, position=0):
             pid, split, exams, pt_metadata = (
@@ -305,7 +277,6 @@ class NLST(pl.LightningDataModule):
         NLST_kwargs = dict(normalize=self.normalize, 
                            img_size=self.img_size, 
                            num_images=self.num_images, 
-                           num_channels=self.num_channels, 
                            group_keys=self.group_keys,
                            clinical_features=self.clinical_features)
         
@@ -313,14 +284,6 @@ class NLST(pl.LightningDataModule):
             # calculate class sample count for each split
             if stage == 'fit':
                 self.train_sampler = WeightedRandomSampler(self.get_samples_weight(self.train), num_samples=len(self.train), replacement=True)
-                # self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=300, replacement=False)
-            
-            # if stage == 'validate':
-            #     self.val_sampler = WeightedRandomSampler(self.get_samples_weight(self.val), num_samples=len(self.val), replacement=False)
-
-            # if stage in ['test', 'predict']:
-            #     self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
-
         
         if stage == 'fit':
             self.train = NLST_Dataset(self.train, self.train_transform, **NLST_kwargs)
@@ -384,13 +347,12 @@ class NLST_Dataset(torch.utils.data.Dataset):
         Pytorch Dataset for NLST dataset. Loads preprocesses data from disk and applies data augmentation. Generates masks from bounding boxes stored in metadata..
     """
 
-    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, num_channels=1, group_keys=[], clinical_features=[]):
+    def __init__(self, dataset, transforms, normalize, img_size=[128, 128], num_images=200, group_keys=[], clinical_features=[]):
         self.dataset = dataset
         self.transform = transforms
         self.normalize = normalize
         self.img_size = img_size
         self.num_images = num_images
-        self.num_channels = num_channels
         self.group_keys = group_keys
         self.clinical_features = clinical_features
 
@@ -442,26 +404,6 @@ class NLST_Dataset(torch.utils.data.Dataset):
 
         # Normalize volume
         x = self.normalize(x)  # Custom normalization (mean=0, std=1)
-        # print(f"Original sample['x'] shape: {x.shape}")
-        # Add batch dimension
-        # x = x.unsqueeze(0)  # Shape: [1, C, D, H, W]
-        # mask = mask.unsqueeze(0)
-        # print(f"Shape after adding batch dimension: {x.shape}")
-        # Resize x and mask to fixed size (e.g., D=32, H=224, W=224)
-        # D_size, H_size, W_size = 32, 224, 224
-        # # D_size, H_size, W_size = 16, 112, 112
-        # x = F.interpolate(x, size=(D_size, H_size, W_size), mode='trilinear', align_corners=False)
-        # mask = F.interpolate(mask, size=(D_size, H_size, W_size), mode='nearest')  # Use 'nearest' for masks
-
-        # print(f"Shape after interpolation: {x.shape}")
-        # Remove batch dimension
-        # x = x.squeeze(0)  # Shape: [C, D_size, H_size, W_size]
-        # mask = mask.squeeze(0)
-        # print(f"Shape after squeezing batch dimension: {x.shape}")
-        # Expand channels if needed
-        if self.num_channels == 3:
-            x = x.repeat(3, 1, 1, 1)  # From (1, D, H, W) to (3, D, H, W)
-            # print(f"Shape after channel repeat: {x.shape}")
 
         # get group info
         group_info = {k:torch.tensor([v]) for k,v in self.dataset[idx].items() if k in self.group_keys} if self.group_keys else {}
@@ -487,6 +429,9 @@ class NLST_Dataset(torch.utils.data.Dataset):
 
         # Remove unnecessary items
         del sample['bounding_boxes']
+        
+        # garbage collect
+        gc.collect()
 
         return sample_dict
 

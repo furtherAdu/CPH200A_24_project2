@@ -24,7 +24,7 @@ from einops.layers.torch import Reduce
 from NLST_data_dict import clinical_feature_type, subgroup_feature_type
 import os
 import matplotlib.pyplot as plt
-import pdb
+from einops import repeat
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -449,29 +449,17 @@ class Classifer(pl.LightningModule):
         x, y, region_mask = self.get_xy(batch, return_region_mask=True)
 
         y_hat, activation_map = self.forward(x, return_maps=True)
-
-        # Reduce activation map to single channel; normalize using sigmoid
-        activation_map_reduced = activation_map.mean(dim=1, keepdim=True)
-        activation_map_normalized = torch.sigmoid(activation_map_reduced)
-        # activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
         
-        # Resize mask to match activation map size
-        region_mask_resized = F.interpolate(
-            region_mask,
-            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
-            mode='nearest'  # Use nearest interpolation for masks
-        ).float()
+        # Reduce activation map to single channel; normalize using sigmoid
+        activation_map_reduced, activation_map_normalized = self.get_activation_map_reduced_normalized(activation_map)
+        
+        # Resize region mask to match activation map size
+        region_mask_resized = self.get_region_mask_resized(region_mask, activation_map)
 
-        # calculate loss
-        classification_loss = self.loss(y_hat, y)
-
+        # calculate losses
         use_localization = False
-        if use_localization:
-            # localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
-            localization_loss = self.localization_loss_fn(activation_map_reduced, region_mask_resized)
-
-        else:
-            localization_loss = 0
+        classification_loss = self.get_classification_loss(y_hat, y)
+        localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
 
         # Compute metrics
@@ -539,8 +527,36 @@ class Classifer(pl.LightningModule):
                     if self.logger.experiment:
                         wandb_logger = self.logger
                         wandb_logger.log_image(key=plot_name, images=[localization_fig])                 
-    
+
         return total_loss
+    
+    def get_activation_map_reduced_normalized(self, activation_map):
+        # Reduce activation map to single channel
+        activation_map_reduced = activation_map.mean(dim=1, keepdim=True)
+
+        # Normalize using sigmoid
+        activation_map_normalized = torch.sigmoid(activation_map_reduced)
+
+        return activation_map_reduced, activation_map_normalized
+    
+    def get_region_mask_resized(self, region_mask, activation_map):
+        # Resize region mask to match activation map size
+        region_mask_resized = F.interpolate(
+            region_mask,
+            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            mode='nearest'  # Use nearest interpolation for masks
+        ).float()
+
+        return region_mask_resized
+
+    def get_localization_loss(self, activation_map, region_mask):
+        localization_loss = self.localization_loss_fn(activation_map, region_mask)
+        return localization_loss
+
+    def get_classification_loss(self, y_hat, y):
+        classification_loss = self.loss(y_hat, y)
+        return classification_loss
+
 class MLP(Classifer):
     def __init__(self, input_dim=28*28*3, hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -574,7 +590,6 @@ class MLP(Classifer):
         self.model.apply(self.init_weights)
 
     def forward(self, x):
-        
         batch_size, channels, width, height = x.size()
         x = rearrange(x, 'b c w h -> b (w h c)')
         return self.model(x)
@@ -681,76 +696,6 @@ class CNN(Classifer):
         x = self.feature_extractor(x).flatten(1)
         return self.classifier(x)
 
-
-    def __init__(self, input_dim=(3, 16, 28, 28), hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
-        super().__init__()
-        self.save_hyperparameters()
-
-        self.hidden_dim = hidden_dim
-        self.use_bn = use_bn
-        self.bn_fc = [nn.BatchNorm1d(hidden_dim)] if self.use_bn else []
-        self.num_layers = num_layers
-        self.init_lr = init_lr
-
-        # Initialize convolutional layers
-        self.feature_extractor = []
-        for i in range(num_layers):
-            if i == 0:  # First conv layer
-                in_channels = input_dim[0]
-                out_channels = 20
-                k = 3  # Conv3d kernel size
-                conv_layer = nn.Sequential(
-                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
-                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-                    nn.ReLU()
-                )
-            else:  # Subsequent conv layers
-                k = 3
-                bn_conv = [nn.BatchNorm3d(out_channels)] if self.use_bn else []
-                conv_layer = nn.Sequential(
-                    nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=(k, k, k)),
-                    *bn_conv,
-                    nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-                    nn.ReLU()
-                )
-
-            self.feature_extractor.append(conv_layer)
-
-            # Update channels for layers i > 0
-            in_channels = out_channels
-            out_channels *= 2
-
-        self.feature_extractor = nn.Sequential(*self.feature_extractor)
-
-        # Get the number of output features from conv layers
-        num_features_before_fc = functools.reduce(operator.mul, list(self.feature_extractor(torch.rand(1, *input_dim)).shape[1:]))
-
-        # Initialize fully connected layers
-        self.classifier = []
-        for i in range(num_layers):
-            in_features = num_features_before_fc if i == 0 else self.hidden_dim
-
-            if i == num_layers - 1:  # Final fc layer
-                fc_layer = nn.Sequential(
-                    nn.Linear(in_features, num_classes),
-                    nn.Softmax(dim=-1)
-                )
-            else:  # Hidden fc layers
-                fc_layer = nn.Sequential(
-                    nn.Linear(in_features=in_features, out_features=self.hidden_dim),
-                    *self.bn_fc,
-                    nn.ReLU()
-                )
-
-            self.classifier.append(fc_layer)
-
-        self.classifier = nn.Sequential(*self.classifier)
-
-    def forward(self, x):
-        # x shape: (batch_size, channels, depth, height, width)
-        x = self.feature_extractor(x).flatten(1)
-        return self.classifier(x)
-
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
@@ -822,6 +767,9 @@ class CNN3D(Classifer):
 
     def forward(self, x):
         # x shape: (batch_size, channels, depth, height, width)
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         x = self.feature_extractor(x).flatten(1)
         return self.classifier(x)
 
@@ -885,6 +833,9 @@ class ResNet18_adapted(Classifer):
             self.classification_head.apply(self.init_weights)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # x shape: [batch_size, channels, depth, height, width]
         batch_size, channels, depth, height, width = x.size()
         
@@ -968,7 +919,6 @@ class ResNet18_adapted(Classifer):
                     
         return tuple(return_objects)
 
-        
     def training_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
     def validation_step(self, batch, batch_idx):
@@ -996,6 +946,9 @@ class ResNet3D(Classifer):
         self.classification_head = nn.Linear(num_features, num_classes)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # Pass input through the backbone
         features = self.backbone.stem(x)
         features = self.backbone.layer1(features)
@@ -1027,7 +980,7 @@ class ResNet3D(Classifer):
 
 
 class Swin3DModel(Classifer):
-    def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, num_channels=3, **kwargs):
+    def __init__(self, num_classes=2, init_lr=1e-3, pretraining=True, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
         self.save_hyperparameters()
 
@@ -1048,7 +1001,9 @@ class Swin3DModel(Classifer):
         self.classification_head = nn.Linear(in_features, num_classes)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
-        torch.distributed.breakpoint
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
+
         # Extract features using the backbone
         x = self.backbone.patch_embed(x)  # B _T _H _W C
         x = self.backbone.pos_drop(x)
@@ -1175,65 +1130,38 @@ class RiskModel(Classifer):
         
         return x, y_seq, y_mask, region_annotation_mask
 
-
     def step(self, batch, batch_idx, stage, outputs):
-        x, y_seq, y_mask, region_annotation_mask = self.get_xy(batch)
+        x, y_seq, y_mask, region_mask = self.get_xy(batch)
 
-        if self.clinical_features:
-            clinical_features_dict = {}
-            for k in self.clinical_features:
-                # get feature type
-                feature_type = clinical_feature_type[k]
+        # Get clinical features, if used
+        clinical_features = self.get_clinical_features(batch)
 
-                # vectorize clinical feature as numpy array
-                clinical_feature_k = self.trainer.datamodule.vectorizer.transform(
-                    {k: self.safely_to_numpy(batch[k])}, feature_type=feature_type
-                )
-
-                if feature_type == 'categorical':
-                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1)
-
-                # send back to torch 
-                clinical_features_dict.update({k:torch.from_numpy(v) for k,v in clinical_feature_k.items()})
-
-            # concatenate all features
-            clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
-        else:
-            clinical_features = None
+        # Expand channels
+        x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
 
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
         
-        # Compute classification loss (risk prediction loss)
+        # Reduce activation map to single channel; normalize using sigmoid
+        activation_map_reduced, activation_map_normalized = self.get_activation_map_reduced_normalized(activation_map)
+        
+        # Resize region mask to match activation map size
+        region_mask_resized = self.get_region_mask_resized(region_mask, activation_map)
+
         # Mask for right-censored follow-up in patients without cancer
         mask = torch.logical_or(torch.cumsum(y_seq, dim=1) > 0, y_mask)  # Corrected dim from 0 to 1
-        classification_loss = F.binary_cross_entropy_with_logits(y_hat, y_seq, reduction='none')
-        classification_loss = (classification_loss * mask).sum() / mask.sum()  # Masked average
-        
-        activation_map = activation_map.mean(dim=1, keepdim=True)
 
-        # Resize mask to match activation map size
-        region_annotation_mask_resized = F.interpolate(
-            region_annotation_mask,
-            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
-            mode='nearest'  # Use nearest interpolation for masks
-        ).float()
-
-        # Normalize activation map using sigmoid
-        activation_map_normalized = torch.sigmoid(activation_map)
-
-        # Localization loss (using BCE loss)
-        localization_loss = self.localization_loss_fn(activation_map_normalized, region_annotation_mask_resized)
-        
-        # Total loss
-        lambda_loc = 0.5  # Adjust this weight as needed
-        loss = classification_loss + lambda_loc * localization_loss
+        # calculate losses
+        use_localization = False
+        classification_loss = self.get_classification_loss(y_hat, y_seq, mask)
+        localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
+        total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
         
         # Log metrics
         metric_dict = {
             'classification_loss': classification_loss,
             'localization_loss': localization_loss,
-            'loss': loss  # must reflect monitor_key in EarlyStopping callback
+            'loss': total_loss  # must reflect monitor_key in EarlyStopping callback
         }
         
         # Compute accuracy for each year
@@ -1259,12 +1187,42 @@ class RiskModel(Classifer):
             "y": batch["y"],  # If patient has cancer within self.max_followup years (bool)
             "time_at_event": batch["time_at_event"],  # Censor time (int)
             "attention_map": activation_map_normalized.detach(),
-            "true_masks": region_annotation_mask_resized,
+            "true_masks": region_mask_resized,
             "criteria": batch[self.trainer.datamodule.criteria],
             **{k: batch[k] for k in self.trainer.datamodule.group_keys}
         })
 
-        return loss
+        return total_loss
+
+    def get_clinical_features(self, batch):
+        if self.clinical_features:
+            clinical_features_dict = {}
+            for k in self.clinical_features:
+                # get feature type
+                feature_type = clinical_feature_type[k]
+
+                # vectorize clinical feature as numpy array
+                clinical_feature_k = self.trainer.datamodule.vectorizer.transform(
+                    {k: self.safely_to_numpy(batch[k])}, feature_type=feature_type
+                )
+
+                if feature_type == 'categorical':
+                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1)
+
+                # send back to torch 
+                clinical_features_dict.update({k:torch.from_numpy(v) for k,v in clinical_feature_k.items()})
+
+            # concatenate all features
+            clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
+        else:
+            clinical_features = None
+        
+        return clinical_features
+    
+    def get_classification_loss(self, y_hat, y_seq, mask):
+        classification_loss = F.binary_cross_entropy_with_logits(y_hat, y_seq, reduction='none')
+        classification_loss = (classification_loss * mask).sum() / mask.sum()  # Masked average
+        return classification_loss
     
     def training_step(self, batch, batch_idx):
         return self.step(batch, batch_idx, "train", self.training_outputs)

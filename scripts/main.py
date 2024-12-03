@@ -15,7 +15,9 @@ from torch.backends import cudnn
 from lightning import seed_everything
 import json
 import torch
+from lightning.pytorch.plugins import TorchSyncBatchNorm
 
+torch.multiprocessing.set_sharing_strategy('file_system') # to prevent 'RuntimeError: Too many open files.' thrown by dataloader
 dirname = os.path.dirname(__file__)
 global_seed = json.load(open(os.path.join(dirname, '..', 'global_seed.json')))['global_seed']
 seed_everything(global_seed)
@@ -202,6 +204,13 @@ def add_main_args(parser: LightningArgumentParser) -> LightningArgumentParser:
         nargs='*',
         help="The clincal features to include in the risk model."
     )
+        
+    parser.add_argument(
+        "--fast_dev_run",
+        action='store_true',
+        help="Whether to run 5 batches of training, validation, test and prediction data through your trainer to see \
+        if there are any bugs. Disables tuner, checkpoint callbacks, early stopping callbacks, loggers and logger callbacks."
+    )
 
     return parser
 
@@ -299,6 +308,7 @@ def get_trainer(args, strategy='ddp', logger=None, callbacks=[], devices=None):
     args.trainer.logger = logger
     args.trainer.precision = "bf16-mixed" ## This mixed precision training is highly recommended
     args.trainer.min_epochs = 20
+    args.trainer.fast_dev_run = args.fast_dev_run
     if devices:
         args.trainer.devices = devices
 
@@ -374,6 +384,11 @@ def main(args: argparse.Namespace):
     trainer = get_trainer(args, callbacks=callbacks, logger=logger)
     # torch.cuda.set_per_process_memory_fraction(0.8, device=0)
 
+    if trainer.accelerator.__class__.__name__ == 'CUDAAccelerator':
+        # apply batch norm syncing across nodes
+        bn_sync = TorchSyncBatchNorm()
+        model = bn_sync.apply(model)
+    
     if args.train:
         print("Training model")
         trainer.fit(model, datamodule)
