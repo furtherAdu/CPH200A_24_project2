@@ -24,6 +24,7 @@ from einops.layers.torch import Reduce
 from NLST_data_dict import clinical_feature_type, subgroup_feature_type
 import os
 import matplotlib.pyplot as plt
+import pdb
 
 dirname = os.path.dirname(__file__)
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -37,7 +38,7 @@ def compute_iou(pred_mask, true_mask, threshold=0.5):
     else:
         return (intersection / union).item()
 
-def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx, slice_idx, batch_idx, output_dir='visualizations/train'):
+def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id, slice_idx, batch_idx, output_dir='visualizations/train'):
     """
     Visualize the input image, true mask, and predicted mask, and save the results to a specified directory.
 
@@ -45,7 +46,7 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx
     input_image (torch.Tensor): Input image tensor with shape [C, D, H, W]
     true_mask (torch.Tensor): Ground truth mask tensor with shape [C, D, H, W]
     pred_mask (torch.Tensor): Predicted mask tensor with shape [D, H, W]
-    sample_idx (int): Index of the sample in the batch
+    patient_id (int): Patient id of the sample in the batch
     slice_idx (int): Index of the slice to visualize
     batch_idx (int): Index of the current batch
     output_dir (str): Directory name to save the visualizations
@@ -54,7 +55,7 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, sample_idx
     os.makedirs(output_dir, exist_ok=True)
 
     # Create subdirectory for the current sample
-    sample_dir = os.path.join(output_dir, f'sample_{sample_idx}')
+    sample_dir = os.path.join(output_dir, f'patient_{patient_id}')
     os.makedirs(sample_dir, exist_ok=True)
 
     # Extract the specified slice
@@ -450,7 +451,9 @@ class Classifer(pl.LightningModule):
         y_hat, activation_map = self.forward(x, return_maps=True)
 
         # Reduce activation map to single channel; normalize using sigmoid
-        activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
+        activation_map_reduced = activation_map.mean(dim=1, keepdim=True)
+        activation_map_normalized = torch.sigmoid(activation_map_reduced)
+        # activation_map_normalized = torch.sigmoid(activation_map.mean(dim=1, keepdim=True))
         
         # Resize mask to match activation map size
         region_mask_resized = F.interpolate(
@@ -461,7 +464,14 @@ class Classifer(pl.LightningModule):
 
         # calculate loss
         classification_loss = self.loss(y_hat, y)
-        localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
+
+        use_localization = False
+        if use_localization:
+            # localization_loss = self.localization_loss_fn(activation_map_normalized, region_mask_resized)
+            localization_loss = self.localization_loss_fn(activation_map_reduced, region_mask_resized)
+
+        else:
+            localization_loss = 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
 
         # Compute metrics
@@ -511,27 +521,26 @@ class Classifer(pl.LightningModule):
                     slice_idx = pred_mask_upsampled.shape[0] // 2  # Middle slice along depth
 
                     # get patient id
-                    pid = batch['pid'][sample_idx]
+                    pid = batch['pid'][sample_idx].tolist()[0]
 
                     # Save visualization
                     localization_fig = visualize_and_save_predictions(
                                         input_image,
                                         true_mask,
                                         pred_mask_upsampled,
-                                        sample_idx=pid,
+                                        patient_id=pid,
                                         slice_idx=slice_idx,
                                         batch_idx=batch_idx,
                                         output_dir=f'visualizations/{self.__class__.__name__}/{stage}/epoch{self.trainer.current_epoch}'
                                     )
                 
                     # log plots
-                    plot_name = f'localization_{stage}set_pid{pid.tolist()[0]}_slice{slice_idx}'
+                    plot_name = f'localization_{stage}set_pid{pid}_slice{slice_idx}'
                     if self.logger.experiment:
                         wandb_logger = self.logger
                         wandb_logger.log_image(key=plot_name, images=[localization_fig])                 
     
         return total_loss
-        
 class MLP(Classifer):
     def __init__(self, input_dim=28*28*3, hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
@@ -1010,7 +1019,7 @@ class ResNet3D(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):

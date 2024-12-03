@@ -203,7 +203,7 @@ class NLST(pl.LightningDataModule):
         # Data augmentation transforms for training
         if self.use_data_augmentation:
             augmentation_transforms = [
-                tio.RandomAffine(degrees=20),
+                tio.RandomAffine(degrees=20, p=0.5),
                 # tio.RandomFlip(axes=('LR', 'AP', 'SI'), flip_probability=0.5),
                 # tio.RandomAffine(
                 #     scales=(0.9, 1.1),
@@ -238,6 +238,16 @@ class NLST(pl.LightningDataModule):
         self.acc2lungrads = pickle.load(open(self.lungrads_path, "rb"))
         self.valid_exams = set(torch.load(self.valid_exam_path, weights_only=True))
         self.train, self.val, self.test = [], [], []
+
+
+        # import random
+        # total_rows = len(self.metadata)
+        # rows_to_load = int(total_rows * 0.005)
+        
+        # # Randomly sample the rows to load
+        # selected_indices = random.sample(range(total_rows), rows_to_load)
+        # self.metadata = [self.metadata[i] for i in sorted(selected_indices)]
+    
 
         for mrn_row in tqdm.tqdm(self.metadata, position=0):
             pid, split, exams, pt_metadata = (
@@ -311,6 +321,7 @@ class NLST(pl.LightningDataModule):
             # if stage in ['test', 'predict']:
             #     self.test_sampler = WeightedRandomSampler(self.get_samples_weight(self.test), num_samples=len(self.test), replacement=False)
 
+        
         if stage == 'fit':
             self.train = NLST_Dataset(self.train, self.train_transform, **NLST_kwargs)
             self.val = NLST_Dataset(self.val, self.test_transform, **NLST_kwargs)
