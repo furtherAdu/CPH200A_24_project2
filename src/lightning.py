@@ -288,7 +288,7 @@ class Classifer(pl.LightningModule):
 
             if self.global_rank == 0: # on node 0
                 # send to numpy
-                output_across_nodes = {k:self.safely_to_numpy(v) for k,v in output_across_nodes.items()}
+                output_across_nodes = {k:self.safely_to_numpy(v).squeeze() for k,v in output_across_nodes.items()}
 
                 # transform arrays as needed
                 for k in self.trainer.datamodule.group_keys:
@@ -320,7 +320,7 @@ class Classifer(pl.LightningModule):
 
     @ staticmethod
     def safely_to_numpy(tensor):
-        return tensor.to(torch.float).cpu().numpy().squeeze()
+        return tensor.to(torch.float).cpu().numpy()
 
     @staticmethod
     def plot_roc_operation_point(y, y_hat, ax, plot_label, color='g'):
@@ -1136,9 +1136,6 @@ class RiskModel(Classifer):
         # Get clinical features, if used
         clinical_features = self.get_clinical_features(batch)
 
-        # # Expand channels
-        # x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
-
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
         
@@ -1207,10 +1204,10 @@ class RiskModel(Classifer):
                 )
 
                 if feature_type == 'categorical':
-                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1)
+                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1, keepdims=True)
 
-                # send back to torch 
-                clinical_features_dict.update({k:torch.from_numpy(v) for k,v in clinical_feature_k.items()})
+                # send back to torch
+                clinical_features_dict.update({k:torch.from_numpy(v.squeeze(1)) for k,v in clinical_feature_k.items()})
 
             # concatenate all features
             clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
