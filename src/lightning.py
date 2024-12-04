@@ -797,7 +797,7 @@ class ResNet18(Classifer):
         x = rearrange(x, 'b c w h -> b c h w')
         return self.classifier(x)
 
-class ResNet18_adapted(Classifer):
+
     def __init__(self, num_classes=9, init_lr=1e-3, pretraining=False, depth_handling='max_pool', **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
         self.save_hyperparameters()
@@ -926,6 +926,42 @@ class ResNet18_adapted(Classifer):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "test", self.test_outputs)
+
+class ResNetAdapted(Classifer):
+    def __init__(self, num_classes=2, init_lr=1e-4, pretraining=True):
+        super().__init__(num_classes=num_classes, init_lr=init_lr)
+
+        # Initialize ResNet18
+        weights_kwargs = {"weights": models.ResNet18_Weights.DEFAULT} if pretraining else {}
+        self.classifier = models.resnet18(**weights_kwargs)
+
+        # Adjust the final layer for the number of classes
+        self.classifier.fc = nn.Linear(self.classifier.fc.in_features, num_classes)
+
+        # Initialize weights if not pretraining
+        if not pretraining:
+            self.classifier.apply(self.init_weights)
+
+    def forward(self, x):
+        B, C, D, H, W = x.shape
+
+        # Ensure input has 3 channels by repeating the channel dimension
+        if C == 1:
+            x = x.repeat(1, 3, 1, 1, 1)  # (B, 3, D, H, W)
+
+        # Reshape and process each slice independently
+        x = x.permute(0, 2, 1, 3, 4).contiguous().view(B * D, 3, H, W)  # (B * D, 3, H, W)
+
+        # Pass through ResNet18
+        slice_preds = self.classifier(x)  # (B * D, num_classes)
+
+        # Reshape back to (B, D, num_classes)
+        slice_preds = slice_preds.view(B, D, self.num_classes)
+
+        # Aggregate slice predictions
+        volume_preds = slice_preds.mean(dim=1)  # (B, num_classes)
+
+        return volume_preds
 
 class ResNet3D(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=False, **kwargs):
