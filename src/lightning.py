@@ -788,25 +788,6 @@ class CNN3D(Classifer):
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
         return [optimizer], [scheduler]
 class ResNet18(Classifer):
-    def __init__(self, num_classes=9, init_lr=1e-3, pretraining=False, **kwargs):
-        super().__init__(num_classes=num_classes, init_lr=init_lr)
-        self.save_hyperparameters()
-
-        # Initialize a ResNet18 model
-        weights_kwargs = {'weights': models.ResNet18_Weights.DEFAULT} if pretraining else {} 
-        self.classifier = models.resnet18(**weights_kwargs)
-        self.classifier.fc = nn.Linear(self.classifier.fc.in_features, num_classes)
-
-        if not pretraining:
-            self.classifier.apply(self.init_weights)
-
-    def forward(self, x):
-        # print('Size: ', x.size())
-        batch_size, channels, width, height = x.size()
-        x = rearrange(x, 'b c w h -> b c h w')
-        return self.classifier(x)
-
-
     def __init__(self, num_classes=9, init_lr=1e-3, pretraining=False, depth_handling='max_pool', **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
         self.save_hyperparameters()
