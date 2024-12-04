@@ -457,7 +457,7 @@ class Classifer(pl.LightningModule):
         region_mask_resized = self.get_region_mask_resized(region_mask, activation_map)
 
         # calculate losses
-        use_localization = False
+        use_localization = True
         classification_loss = self.get_classification_loss(y_hat, y)
         localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
@@ -972,7 +972,7 @@ class ResNet3D(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
@@ -1152,7 +1152,7 @@ class RiskModel(Classifer):
         mask = torch.logical_or(torch.cumsum(y_seq, dim=1) > 0, y_mask)  # Corrected dim from 0 to 1
 
         # calculate losses
-        use_localization = False
+        use_localization = True
         classification_loss = self.get_classification_loss(y_hat, y_seq, mask)
         localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
