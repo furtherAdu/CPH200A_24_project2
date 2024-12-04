@@ -927,7 +927,7 @@ class ResNet18(Classifer):
     def test_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "test", self.test_outputs)
 
-class ResNetAdapted(Classifer):
+class ResNet18_adapted(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-4, pretraining=True):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
 
