@@ -232,7 +232,7 @@ def get_caller():
 def get_datamodule_num_workers(num_process_workers=None):
     # set per https://discuss.pytorch.org/t/guidelines-for-assigning-num-workers-to-dataloader/813/5
     num_process_workers = num_process_workers if num_process_workers else 1
-    datamodule_num_workers = 0# device_count() * 4
+    datamodule_num_workers = device_count() * 8
     n_cpus = os.cpu_count()
     if datamodule_num_workers * num_process_workers >= n_cpus:
         datamodule_num_workers = math.floor(n_cpus/num_process_workers * .9) 
