@@ -39,18 +39,6 @@ def compute_iou(pred_mask, true_mask, threshold=0.5):
         return (intersection / union).item()
 
 def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id, slice_idx, batch_idx, output_dir='visualizations/train'):
-    """
-    Visualize the input image, true mask, and predicted mask, and save the results to a specified directory.
-
-    Parameters:
-    input_image (torch.Tensor): Input image tensor with shape [C, D, H, W]
-    true_mask (torch.Tensor): Ground truth mask tensor with shape [C, D, H, W]
-    pred_mask (torch.Tensor): Predicted mask tensor with shape [D, H, W]
-    patient_id (int): Patient id of the sample in the batch
-    slice_idx (int): Index of the slice to visualize
-    batch_idx (int): Index of the current batch
-    output_dir (str): Directory name to save the visualizations
-    """
     # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
@@ -68,7 +56,7 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id
     true_mask_slice = true_mask[slice_idx, :, :].cpu().numpy()  # Shape: [H, W]
 
     # Handle pred_mask
-    pred_mask_slice = pred_mask[slice_idx, :, :].detach().cpu().numpy()  # Shape: [H, W]
+    pred_mask_slice = pred_mask[0, slice_idx, :, :].detach().cpu().numpy()  # Shape: [H, W]
 
     # Apply threshold to get binary predicted mask
     pred_mask_binary = (pred_mask_slice > 0.5).astype(float)
@@ -99,7 +87,7 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id
     plt.savefig(output_path)
     plt.close()
     return fig
-
+    
 class Classifer(pl.LightningModule):
     def __init__(self, num_classes=9, init_lr=3e-4):
         super().__init__()
@@ -108,7 +96,6 @@ class Classifer(pl.LightningModule):
 
         # Define loss fn for classifier
         self.loss = nn.CrossEntropyLoss()
-        self.localization_loss_fn = nn.BCEWithLogitsLoss()
 
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=self.num_classes)
         self.auc = torchmetrics.AUROC(task="binary" if self.num_classes == 2 else "multiclass", num_classes=self.num_classes)
@@ -448,29 +435,32 @@ class Classifer(pl.LightningModule):
     def step_3d(self, batch, batch_idx, stage, outputs, visualize_localization=False):
         x, y, region_mask = self.get_xy(batch, return_region_mask=True)
 
-        y_hat, activation_map = self.forward(x, return_maps=True)
+        y_hat, activation_scores = self.forward(x, return_maps=True)
         
-        # Reduce activation map to single channel; normalize using sigmoid
-        activation_map_reduced, activation_map_normalized = self.get_activation_map_reduced_normalized(activation_map)
+        # Resize region mask to match activation scores size
+        region_mask_resized = self.get_region_mask_resized(region_mask, activation_scores)
         
-        # Resize region mask to match activation map size
-        region_mask_resized = self.get_region_mask_resized(region_mask, activation_map)
 
         # calculate losses
-        use_localization = False
+        use_localization = True
         classification_loss = self.get_classification_loss(y_hat, y)
-        localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
+        localization_loss = self.get_localization_loss(activation_scores, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
 
-        # Compute metrics
-        iou = compute_iou(activation_map_normalized, region_mask_resized) if region_mask_resized.sum() > 0 else float('nan')
+        batch_size = activation_scores.size(0)
+        activation_scores_flat = activation_scores.view(batch_size, -1)
+        alpha = F.softmax(activation_scores_flat, dim=1)
+        alpha = alpha.view_as(activation_scores)
+        iou = compute_iou(alpha, region_mask_resized)
+        # # Compute metrics
+        # iou = compute_iou(activation_map_normalized, region_mask_resized) if region_mask_resized.sum() > 0 else float('nan')
         accuracy = self.accuracy(y_hat, y)
 
-        metric_dict = {'iou': iou,
-                       'loss': total_loss, 
+        metric_dict = {'loss': total_loss, 
                        'acc': accuracy,
                        'classification_loss': classification_loss,
-                       'localization_loss': localization_loss}
+                       'localization_loss': localization_loss,
+                       'iou': iou}
         
         # Log metrics to wandb
         for metric_name, metric_value in metric_dict.items():
@@ -489,44 +479,23 @@ class Classifer(pl.LightningModule):
         # Visualization and saving
         if visualize_localization:
             for sample_idx in range(x.size(0)):
-                if y[sample_idx]: # if sample has cancer diagnosis
-                    input_image = x[sample_idx]  # Shape: [C, D, H, W]
-                    true_mask = region_mask[sample_idx]  # Shape: [1, D, H, W]
-                    pred_mask = activation_map_normalized[sample_idx].unsqueeze(0) # Shape: [1, 1, D', H', W']
-
-                    # Upsample pred_mask to match input_image size
-                    pred_mask_upsampled = F.interpolate(
-                        pred_mask,
-                        size=input_image.shape[1:],  # Match spatial dimensions (D, H, W)
-                        mode='trilinear',
-                        align_corners=False
-                    )
-
-                    # Remove unnecessary dimensions
-                    pred_mask_upsampled = pred_mask_upsampled.squeeze()  # Shape: [D, H, W]
-
-                    # Define the slice index to visualize
-                    slice_idx = pred_mask_upsampled.shape[0] // 2  # Middle slice along depth
-
-                    # get patient id
-                    pid = batch['pid'][sample_idx].tolist()[0]
-
-                    # Save visualization
-                    localization_fig = visualize_and_save_predictions(
-                                        input_image,
-                                        true_mask,
-                                        pred_mask_upsampled,
-                                        patient_id=pid,
-                                        slice_idx=slice_idx,
-                                        batch_idx=batch_idx,
-                                        output_dir=f'visualizations/{self.__class__.__name__}/{stage}/epoch{self.trainer.current_epoch}'
-                                    )
+                input_image = x[sample_idx]
+                true_mask = region_mask[sample_idx]
+                pred_mask = alpha[sample_idx]
                 
-                    # log plots
-                    plot_name = f'localization_{stage}set_pid{pid}_slice{slice_idx}'
-                    if self.logger.experiment:
-                        wandb_logger = self.logger
-                        wandb_logger.log_image(key=plot_name, images=[localization_fig])                 
+                slice_idx = pred_mask.shape[2] // 2  
+                
+                patient_id = batch['pid'][sample_idx].item()
+                
+                visualize_and_save_predictions(
+                    input_image,
+                    true_mask,
+                    pred_mask,
+                    patient_id=patient_id,
+                    slice_idx=slice_idx,
+                    batch_idx=batch_idx,
+                    output_dir=f'visualizations/{self.__class__.__name__}/{stage}'
+                )
 
         return total_loss
     
@@ -539,19 +508,36 @@ class Classifer(pl.LightningModule):
 
         return activation_map_reduced, activation_map_normalized
     
-    def get_region_mask_resized(self, region_mask, activation_map):
-        # Resize region mask to match activation map size
+    def get_region_mask_resized(self, region_mask, target_tensor):
+        # Resize region mask to match the size of the target tensor (activation_scores)
         region_mask_resized = F.interpolate(
             region_mask,
-            size=activation_map.shape[2:],  # Match spatial dimensions (D', H', W')
+            size=target_tensor.shape[2:],  # Match spatial dimensions (D', H', W')
             mode='nearest'  # Use nearest interpolation for masks
         ).float()
 
         return region_mask_resized
 
-    def get_localization_loss(self, activation_map, region_mask):
-        localization_loss = self.localization_loss_fn(activation_map, region_mask)
-        return localization_loss
+    # def get_localization_loss(self, activation_map, region_mask):
+    #     localization_loss = self.localization_loss_fn(activation_map, region_mask)
+    #     return localization_loss
+
+    def get_localization_loss(self, activation_scores, region_mask_resized, epsilon=1e-8):
+        batch_size = activation_scores.size(0)
+        activation_scores_flat = activation_scores.view(batch_size, -1)  # Shape: [B, num_locations]
+        region_mask_flat = region_mask_resized.view(batch_size, -1)      # Shape: [B, num_locations]
+
+        # Apply softmax over spatial dimensions
+        alpha = F.softmax(activation_scores_flat, dim=1)  # Shape: [B, num_locations]
+
+        # Compute agreement
+        agreement = torch.sum(alpha * region_mask_flat, dim=1)  # Shape: [B]
+
+        # Compute localization loss
+        localization_loss = -torch.log(agreement + epsilon)  # Add epsilon to prevent log(0)
+
+        # Return mean loss over batch
+        return localization_loss.mean()
 
     def get_classification_loss(self, y_hat, y):
         classification_loss = self.loss(y_hat, y)
@@ -944,6 +930,7 @@ class ResNet3D(Classifer):
 
         # Define a new classification head
         self.classification_head = nn.Linear(num_features, num_classes)
+        self.localization_head = nn.Conv3d(num_features, 1, kernel_size=1, bias=False)
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False):
         # Expand channels
@@ -955,6 +942,7 @@ class ResNet3D(Classifer):
         features = self.backbone.layer2(features)
         features = self.backbone.layer3(features)
         activation_map = self.backbone.layer4(features)  # Activation maps from the last conv layer
+        activation_scores = self.localization_head(activation_map)  # Shape: [B, 1, D', H', W']
 
         # pooling
         pooled_features = self.pool(activation_map).squeeze(dim=(2,3,4))
@@ -967,7 +955,7 @@ class ResNet3D(Classifer):
         if return_features:
             return_objects.append(pooled_features)
         if return_maps:
-            return_objects.append(activation_map)
+            return_objects.append(activation_scores)
                     
         return tuple(return_objects)
 
