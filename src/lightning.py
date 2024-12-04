@@ -65,7 +65,7 @@ def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id
     non_zero_slices = np.where(true_mask_np.sum(axis=(1,2)) > 0)[0]
 
     if len(non_zero_slices) == 0:
-        print(f"Patient {patient_id} has no slices with non-zero mask.")
+        # print(f"Patient {patient_id} has no slices with non-zero mask.")
         return
 
     middle_idx = len(non_zero_slices) // 2
@@ -911,7 +911,7 @@ class ResNet18(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
@@ -1001,7 +1001,7 @@ class ResNet3D(Classifer):
         return tuple(return_objects)
 
     def training_step(self, batch, batch_idx):
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
@@ -1056,7 +1056,7 @@ class Swin3DModel(Classifer):
         return tuple(return_objects)
     
     def training_step(self, batch, batch_idx):
-        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=True)
+        return self.step_3d(batch, batch_idx, "train", self.training_outputs, visualize_localization=False)
     def validation_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
@@ -1179,7 +1179,7 @@ class RiskModel(Classifer):
         mask = torch.logical_or(torch.cumsum(y_seq, dim=1) > 0, y_mask)  # Corrected dim from 0 to 1
 
         # calculate losses
-        use_localization = True
+        use_localization = False
         classification_loss = self.get_classification_loss(y_hat, y_seq, mask)
         localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
