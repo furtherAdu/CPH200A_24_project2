@@ -39,56 +39,80 @@ def compute_iou(pred_mask, true_mask, threshold=0.5):
     else:
         return (intersection / union).item()
 
-def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id, slice_idx, batch_idx, output_dir='visualizations/train'):
+def visualize_and_save_predictions(input_image, true_mask, pred_mask, patient_id, batch_idx, output_dir='visualizations/train'):
     # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # Create subdirectory for the current sample
-    sample_dir = os.path.join(output_dir, f'patient_{patient_id}')
-    os.makedirs(sample_dir, exist_ok=True)
+    # sample_dir = os.path.join(output_dir, f'patient_{patient_id}')
+    # os.makedirs(sample_dir, exist_ok=True)
 
-    # Extract the specified slice
+    input_image = input_image.cpu()
+    true_mask = true_mask.cpu()
+    pred_mask = pred_mask.cpu()
+
+    pred_mask = pred_mask.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, D', H', W']
+    pred_mask_upsampled = F.interpolate(
+        pred_mask,
+        size=input_image.shape[1:],  # (D, H, W)
+        mode='trilinear',
+        align_corners=False
+    ).squeeze(0).squeeze(0)  # Shape: [D, H, W]
+
+    input_image_np = input_image.numpy()
+    true_mask_np = true_mask.numpy()
+    pred_mask_np = pred_mask_upsampled.detach().numpy()
+
+    non_zero_slices = np.where(true_mask_np.sum(axis=(1,2)) > 0)[0]
+
+    if len(non_zero_slices) == 0:
+        print(f"Patient {patient_id} has no slices with non-zero mask.")
+        return
+
+    middle_idx = len(non_zero_slices) // 2
+    slice_idx = non_zero_slices[middle_idx]
+
     # Handle input_image
-    image_slice = input_image[0, slice_idx, :, :].cpu().numpy()  # Shape: [H, W]
+    image_slice = input_image_np[:, slice_idx, :, :].mean(axis=0)  # Shape: [H, W]
 
     # Handle true_mask
-    if true_mask.dim() == 4:
-        true_mask = true_mask[0]  # Remove channel dimension (assuming C=1)
-    true_mask_slice = true_mask[slice_idx, :, :].cpu().numpy()  # Shape: [H, W]
+    true_mask_slice = true_mask_np[slice_idx, :, :]  # Shape: [H, W]
 
     # Handle pred_mask
-    pred_mask_slice = pred_mask[0, slice_idx, :, :].detach().cpu().numpy()  # Shape: [H, W]
+    pred_mask_slice = pred_mask_np[slice_idx, :, :]  # Shape: [H, W]
 
-    # Apply threshold to get binary predicted mask
-    pred_mask_binary = (pred_mask_slice > 0.5).astype(float)
+    # Normalize the attention map for visualization
+    max_value = pred_mask_slice.max()
+    if max_value > 0:
+        normalized_pred_mask = pred_mask_slice / max_value
+    else:
+        normalized_pred_mask = pred_mask_slice  # Handle the case where max_value is zero
 
     # Create subplots
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
 
     # Display input image
     axs[0].imshow(image_slice, cmap='gray')
-    axs[0].set_title('Input Image')
+    axs[0].set_title('Input Image', pad=10)  
     axs[0].axis('off')
 
     # Display ground truth mask
     axs[1].imshow(image_slice, cmap='gray')
     axs[1].imshow(true_mask_slice, alpha=0.5, cmap='Reds')
-    axs[1].set_title('Ground Truth Mask')
+    axs[1].set_title('Ground Truth Mask', pad=10)  
     axs[1].axis('off')
 
-    # Display predicted mask
+    # Display attention heatmap
     axs[2].imshow(image_slice, cmap='gray')
-    axs[2].imshow(pred_mask_binary, alpha=0.5, cmap='Blues')
-    axs[2].set_title('Predicted Mask')
+    axs[2].imshow(normalized_pred_mask, alpha=0.5, cmap='jet')
+    axs[2].set_title('Attention Heatmap', pad=10)  
     axs[2].axis('off')
 
     # Adjust layout and save the figure
-    plt.tight_layout()
-    output_path = os.path.join(sample_dir, f'batch_{batch_idx}_slice_{slice_idx}.png')
+    plt.tight_layout(pad=2)  
+    output_path = os.path.join(output_dir, f'batch_{batch_idx}_pid_{patient_id}_slice_{slice_idx}.png')
     plt.savefig(output_path)
     plt.close()
-    return fig
-    
+
 class Classifer(pl.LightningModule):
     def __init__(self, num_classes=9, init_lr=3e-4):
         super().__init__()
@@ -477,23 +501,22 @@ class Classifer(pl.LightningModule):
                 **{k:batch[k] for k in self.trainer.datamodule.group_keys},
             })
 
-        # Visualization and saving
+        # Visualization
         if visualize_localization:
             for sample_idx in range(x.size(0)):
-                input_image = x[sample_idx]
-                true_mask = region_mask[sample_idx]
-                pred_mask = alpha[sample_idx]
-                
-                slice_idx = pred_mask.shape[2] // 2  
-                
+                input_image = x[sample_idx]  # Shape: [C, D, H, W]
+                true_mask = region_mask[sample_idx, 0]  # Assuming region_mask has shape [B, 1, D, H, W]
+                pred_mask = alpha[sample_idx, 0]  # Shape: [D, H, W]
+
+                # Get patient id
                 patient_id = batch['pid'][sample_idx].item()
-                
+
+                # Call visualization function
                 visualize_and_save_predictions(
                     input_image,
                     true_mask,
                     pred_mask,
                     patient_id=patient_id,
-                    slice_idx=slice_idx,
                     batch_idx=batch_idx,
                     output_dir=f'visualizations/{self.__class__.__name__}/{stage}'
                 )
