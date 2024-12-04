@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LinearLR
 import torchmetrics
+import torchmetrics.classification
 import torchvision.models as models
 from src.cindex import concordance_index
 from einops import rearrange
@@ -235,7 +236,7 @@ class Classifer(pl.LightningModule):
 
         # confusion matrix metrics for criteria (e.g. lungrads)
         if self.trainer.datamodule.name == 'NLST':
-            criteria = torch.cat([o["y"] for o in self.test_outputs])
+            criteria = torch.cat([o['criteria'] for o in self.test_outputs])
             criteria_conf_metrics = self.get_confmat_metrics(criteria, y)
             self.log_dict({f'test_{k}_{self.trainer.datamodule.criteria}':v 
                            for k,v in criteria_conf_metrics.items()}, sync_dist=True, prog_bar=True)            
@@ -275,7 +276,7 @@ class Classifer(pl.LightningModule):
 
             if self.global_rank == 0: # on node 0
                 # send to numpy
-                output_across_nodes = {k:self.safely_to_numpy(v) for k,v in output_across_nodes.items()}
+                output_across_nodes = {k:self.safely_to_numpy(v).squeeze() for k,v in output_across_nodes.items()}
 
                 # transform arrays as needed
                 for k in self.trainer.datamodule.group_keys:
@@ -307,7 +308,7 @@ class Classifer(pl.LightningModule):
 
     @ staticmethod
     def safely_to_numpy(tensor):
-        return tensor.to(torch.float).cpu().numpy().squeeze()
+        return tensor.to(torch.float).cpu().numpy()
 
     @staticmethod
     def plot_roc_operation_point(y, y_hat, ax, plot_label, color='g'):
@@ -782,7 +783,7 @@ class ResNet18(Classifer):
         x = rearrange(x, 'b c w h -> b c h w')
         return self.classifier(x)
 
-class ResNet18_adapted(Classifer):
+
     def __init__(self, num_classes=9, init_lr=1e-3, pretraining=False, depth_handling='max_pool', **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
         self.save_hyperparameters()
@@ -911,6 +912,42 @@ class ResNet18_adapted(Classifer):
         return self.step_3d(batch, batch_idx, "val", self.validation_outputs)
     def test_step(self, batch, batch_idx):
         return self.step_3d(batch, batch_idx, "test", self.test_outputs)
+
+class ResNet18_adapted(Classifer):
+    def __init__(self, num_classes=2, init_lr=1e-4, pretraining=True):
+        super().__init__(num_classes=num_classes, init_lr=init_lr)
+
+        # Initialize ResNet18
+        weights_kwargs = {"weights": models.ResNet18_Weights.DEFAULT} if pretraining else {}
+        self.classifier = models.resnet18(**weights_kwargs)
+
+        # Adjust the final layer for the number of classes
+        self.classifier.fc = nn.Linear(self.classifier.fc.in_features, num_classes)
+
+        # Initialize weights if not pretraining
+        if not pretraining:
+            self.classifier.apply(self.init_weights)
+
+    def forward(self, x):
+        B, C, D, H, W = x.shape
+
+        # Ensure input has 3 channels by repeating the channel dimension
+        if C == 1:
+            x = x.repeat(1, 3, 1, 1, 1)  # (B, 3, D, H, W)
+
+        # Reshape and process each slice independently
+        x = x.permute(0, 2, 1, 3, 4).contiguous().view(B * D, 3, H, W)  # (B * D, 3, H, W)
+
+        # Pass through ResNet18
+        slice_preds = self.classifier(x)  # (B * D, num_classes)
+
+        # Reshape back to (B, D, num_classes)
+        slice_preds = slice_preds.view(B, D, self.num_classes)
+
+        # Aggregate slice predictions
+        volume_preds = slice_preds.mean(dim=1)  # (B, num_classes)
+
+        return volume_preds
 
 class ResNet3D(Classifer):
     def __init__(self, num_classes=2, init_lr=1e-3, pretraining=False, **kwargs):
@@ -1071,6 +1108,7 @@ class RiskModel(Classifer):
         self.auc = torchmetrics.AUROC(task="binary")
         self.iou_metric = torchmetrics.JaccardIndex(task="binary")
         self.dice_metric = torchmetrics.Dice()
+        self.accuracy = torchmetrics.classification.BinaryAccuracy()
 
     def forward(self, x, return_logits=True, return_features=False, return_maps=False, added_features=None):
         # Get logits and activation maps from the backbone
@@ -1124,9 +1162,6 @@ class RiskModel(Classifer):
         # Get clinical features, if used
         clinical_features = self.get_clinical_features(batch)
 
-        # # Expand channels
-        # x = repeat(x, 'b c d h w -> b (repeat c) d h w', repeat=3)
-
         # Get risk scores and activation maps from your model
         y_hat, activation_map = self.forward(x, return_maps=True, added_features=clinical_features)  # y_hat: (B, T), activation_map: (B, C, D, H, W)
         
@@ -1140,7 +1175,7 @@ class RiskModel(Classifer):
         mask = torch.logical_or(torch.cumsum(y_seq, dim=1) > 0, y_mask)  # Corrected dim from 0 to 1
 
         # calculate losses
-        use_localization = True
+        use_localization = False
         classification_loss = self.get_classification_loss(y_hat, y_seq, mask)
         localization_loss = self.get_localization_loss(activation_map_reduced, region_mask_resized) if use_localization else 0
         total_loss = classification_loss + 0.5 * localization_loss  # Adjust weight as needed
@@ -1195,10 +1230,10 @@ class RiskModel(Classifer):
                 )
 
                 if feature_type == 'categorical':
-                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1)
+                    clinical_feature_k[k] = np.argmax(clinical_feature_k[k], axis=1, keepdims=True)
 
-                # send back to torch 
-                clinical_features_dict.update({k:torch.from_numpy(v) for k,v in clinical_feature_k.items()})
+                # send back to torch
+                clinical_features_dict.update({k:torch.from_numpy(v.squeeze(1)) for k,v in clinical_feature_k.items()})
 
             # concatenate all features
             clinical_features = torch.stack(list(clinical_features_dict.values())).cuda().bfloat16().T # size: (B, len(clinical_features))
