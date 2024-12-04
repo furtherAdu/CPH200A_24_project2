@@ -304,7 +304,7 @@ def get_model(args):
 
 def get_trainer(args, strategy='ddp', logger=None, callbacks=[], devices=None):
     args.trainer.accelerator = 'auto'
-    args.trainer.strategy = strategy if not args.risk else 'ddp_find_unused_parameters_true'
+    args.trainer.strategy = strategy
     args.trainer.logger = logger
     args.trainer.precision = "bf16-mixed" ## This mixed precision training is highly recommended
     args.trainer.min_epochs = 20
