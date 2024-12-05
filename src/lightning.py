@@ -712,7 +712,7 @@ class CNN(Classifer):
         return [optimizer], [scheduler]
 
 class CNN3D(Classifer):
-    def __init__(self, input_dim=(3, 16, 28, 28), hidden_dim=128, num_layers=1, num_classes=9, use_bn=False, init_lr=1e-3, **kwargs):
+    def __init__(self, input_dim=(3, 200, 128, 128), hidden_dim=128, num_layers=1, num_classes=2, use_bn=False, init_lr=1e-3, **kwargs):
         super().__init__(num_classes=num_classes, init_lr=init_lr)
         self.save_hyperparameters()
 
